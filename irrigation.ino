@@ -241,8 +241,8 @@ void loop() {
     }
   }
 
-  // ── Scheduler tick (každou minutu) ──────────────────────────
-  if (now - lastSchedulerTick >= 60000UL) {
+  // ── Scheduler tick (každých 15 s — zajistí spuštění v každé minutě) ──
+  if (now - lastSchedulerTick >= 15000UL) {
     lastSchedulerTick = now;
     Scheduler_Tick();
   }

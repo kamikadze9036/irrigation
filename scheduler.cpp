@@ -18,6 +18,12 @@ void Scheduler_Tick(void) {
     return;
   }
 
+  // Ochrana proti double-triggeru: pamatujeme si poslední spuštěnou minutu (HHMM)
+  // Tick se volá každých 15 s, tato hodnota zajistí, že každý program spustíme
+  // jen jednou za minutu bez ohledu na to, kolikrát tick proběhne.
+  static int lastTriggeredHHMM = -1;
+  int currentHHMM = t.tm_hour * 100 + t.tm_min;
+
   // Kontrola počasí
   if (Weather_ShouldSkip()) return;
 
@@ -31,16 +37,16 @@ void Scheduler_Tick(void) {
 
     for (int p = 0; p < MAX_PROGRAMS_PER_ZONE; p++) {
       ZoneProgram &pg = zc.programs[p];
-      if (!pg.enabled)            continue;
+      if (!pg.enabled)             continue;
       if (!(pg.days & (1 << bit))) continue;
       if (pg.startHour   != t.tm_hour)  continue;
       if (pg.startMinute != t.tm_min)   continue;
       if (pg.durationMin == 0)          continue;
-      // Jen první sekundy minuty (ochrana proti double-trigger)
-      if (t.tm_sec > 10)                continue;
+      if (lastTriggeredHHMM == currentHHMM) continue;  // už jsme tuto minutu spustili
 
-      Serial.printf("[SCH] Program %d zóny %d — spouštím (%02d:%02d)\n",
-        p+1, z, t.tm_hour, t.tm_min);
+      lastTriggeredHHMM = currentHHMM;
+      Serial.printf("[SCH] Program %d zóny %d — spouštím (%02d:%02d, sekunda %d)\n",
+        p+1, z, t.tm_hour, t.tm_min, t.tm_sec);
       Zone_Start(z, pg.durationMin, RUN_PROGRAM);
       return;  // jen jedna zóna najednou
     }
