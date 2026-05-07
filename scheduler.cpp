@@ -8,8 +8,8 @@
 // tm_wday: 0=Ne, 1=Po, ..., 6=So → bit = (wday==0) ? 6 : wday-1
 
 void Scheduler_Tick(void) {
-  // Pokud zóna běží, scheduler nespouští další
-  if (Zones_GetState().running) return;
+  // Pokud jakákoliv zóna běží (nebo fronta čeká), scheduler nespouští další
+  if (Zones_AnyRunning() || Queue_Count() > 0) return;
 
   // Čas musí být synchonizován
   struct tm t;

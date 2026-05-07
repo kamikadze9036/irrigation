@@ -104,12 +104,12 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
 <!-- ── DASHBOARD ──────────────────────────────────────────────── -->
 <div class="tab active" id="tab-dashboard">
   <div class="running-banner" id="running-banner">
-    <h2>&#9654; Zóna <span id="rb-zone">?</span> běží</h2>
-    <div id="rb-name" style="color:#aaa;font-size:13px;margin-top:4px"></div>
+    <h2 id="rb-title">&#9654; Zálivka běží</h2>
+    <div id="rb-detail" style="color:#aaa;font-size:12px;margin-top:4px"></div>
     <div class="progress-bar"><div class="progress-fill" id="rb-progress" style="width:0%"></div></div>
     <div id="rb-time" style="color:#aaa;font-size:12px"></div>
     <br>
-    <button class="btn btn-red" onclick="stopZone()">&#9209; Zastavit zálivku</button>
+    <button class="btn btn-red" onclick="stopZone()">&#9209; Zastavit vše</button>
   </div>
 
   <div class="card">
@@ -160,13 +160,40 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
         <button class="btn btn-green" onclick="manualRun()" style="margin-top:20px">&#9654; Spustit</button>
       </div>
     </div>
-    <p class="info" style="margin-top:10px">&#9888; Aktuálně běžící zálivka bude zastavena. Počasí se při manuálním spuštění ignoruje.</p>
+    <label style="margin-top:10px"><input type="checkbox" id="man-parallel"> Paralelní spuštění (vedle případně běžící zóny)</label>
+    <p class="info" style="margin-top:6px">&#9888; Bez paralelního módu se aktuální zálivka zastaví. Počasí se ignoruje.</p>
   </div>
 
   <div class="card">
-    <h3>&#128721; Zastavit zálivku</h3>
+    <h3>&#128260; Sekvenční zálivka</h3>
+    <p class="info" style="margin-bottom:10px">Zóny poběží jedna po druhé automaticky. Master ventil zůstane otevřený po celou dobu.</p>
+    <div id="seq-list" style="margin-bottom:10px;min-height:30px">
+      <div style="color:#888;font-size:12px">Zatím žádné zóny — přidej níže</div>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <div>
+        <label>Zóna</label>
+        <select id="seq-zone"></select>
+      </div>
+      <div>
+        <label>Délka (min)</label>
+        <input type="number" id="seq-dur" value="10" min="1" max="120">
+      </div>
+      <div style="flex:0">
+        <button class="btn btn-blue btn-sm" onclick="seqAdd()" style="margin-top:20px">+ Přidat</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-green" onclick="runSequence()">&#9654; Spustit sekvenci</button>
+      <button class="btn btn-gray btn-sm" onclick="seqClear()">Vymazat</button>
+    </div>
+    <div id="seq-status" style="margin-top:8px;font-size:12px;color:#aaa"></div>
+  </div>
+
+  <div class="card">
+    <h3>&#128721; Zastavit vše</h3>
     <button class="btn btn-red" onclick="stopZone()">&#9209; Zastavit okamžitě</button>
-    <p class="info" style="margin-top:8px">Uzavře aktuální zónu a master ventil.</p>
+    <p class="info" style="margin-top:8px">Zastaví všechny běžící zóny, vymaže frontu a zavře master ventil.</p>
   </div>
 
   <div class="card">
@@ -321,14 +348,24 @@ async function refreshDashboard() {
   }
   wd.textContent = d.weatherStatus || '';
 
+  // Banner — podporuje více běžících zón + frontu
   const banner = document.getElementById('running-banner');
-  if(d.running) {
+  const rz = d.runningZones || [];
+  if(rz.length > 0) {
     banner.classList.add('show');
-    document.getElementById('rb-zone').textContent = d.zone;
-    document.getElementById('rb-name').textContent = d.zoneName || '';
-    const pct = d.duration > 0 ? Math.min(100, d.elapsed / d.duration * 100) : 0;
-    document.getElementById('rb-progress').style.width = pct.toFixed(0)+'%';
-    document.getElementById('rb-time').textContent = d.elapsed+' / '+d.duration+' min';
+    if(rz.length === 1) {
+      document.getElementById('rb-title').innerHTML = '&#9654; Zóna '+rz[0].zone+' — '+rz[0].name+' běží';
+      const q = d.queueCount > 0 ? ' (fronta: '+d.queueCount+' zón)' : '';
+      document.getElementById('rb-detail').textContent = q ? 'Sekvenční mód'+q : '';
+      const pct = rz[0].duration > 0 ? Math.min(100, rz[0].elapsed / rz[0].duration * 100) : 0;
+      document.getElementById('rb-progress').style.width = pct.toFixed(0)+'%';
+      document.getElementById('rb-time').textContent = rz[0].elapsed+' / '+rz[0].duration+' min';
+    } else {
+      document.getElementById('rb-title').innerHTML = '&#9654; '+rz.length+' zóny běží paralelně';
+      document.getElementById('rb-detail').textContent = rz.map(z => 'Zóna '+z.zone+' ('+z.elapsed+'/'+z.duration+' min)').join('  ·  ');
+      document.getElementById('rb-progress').style.width = '60%';
+      document.getElementById('rb-time').textContent = '';
+    }
   } else {
     banner.classList.remove('show');
   }
@@ -430,27 +467,83 @@ async function saveAllZones() {
 // ── Manuální ──────────────────────────────────────────────────────
 async function loadManualZones() {
   const d = await api('/api/zones');
-  const sel = document.getElementById('man-zone');
-  sel.innerHTML = '';
-  if(d.zones) d.zones.forEach((z,i) => {
-    const o = document.createElement('option');
-    o.value = i+1; o.textContent = `Zóna ${i+1} — ${z.name}`;
-    sel.appendChild(o);
+  if(!d.zones) return;
+  [document.getElementById('man-zone'), document.getElementById('seq-zone')].forEach(sel => {
+    sel.innerHTML = '';
+    d.zones.forEach((z,i) => {
+      const o = document.createElement('option');
+      o.value = i+1; o.textContent = `Zóna ${i+1} — ${z.name}`;
+      sel.appendChild(o);
+    });
   });
 }
 
 async function manualRun() {
-  const zone = parseInt(document.getElementById('man-zone').value);
-  const dur  = parseInt(document.getElementById('man-dur').value);
+  const zone     = parseInt(document.getElementById('man-zone').value);
+  const dur      = parseInt(document.getElementById('man-dur').value);
+  const parallel = document.getElementById('man-parallel').checked;
   if(!zone || !dur) return;
-  const r = await api('/api/run', 'POST', {zone, minutes: dur});
-  alert(r.ok ? `&#10003; Zóna ${zone} spuštěna na ${dur} min` : '&#10007; Chyba: '+r.error);
+  const r = await api('/api/run', 'POST', {zone, minutes: dur, parallel});
+  alert(r.ok
+    ? `&#10003; Zóna ${zone} spuštěna na ${dur} min${parallel?' (paralelně)':''}`
+    : '&#10007; Chyba: '+r.error);
   refreshDashboard();
 }
 
 async function quickRun(zone) {
-  const r = await api('/api/run', 'POST', {zone, minutes: 5});
+  const r = await api('/api/run', 'POST', {zone, minutes: 5, parallel: false});
   if(r.ok) refreshDashboard();
+}
+
+// ── Sekvenční zálivka ─────────────────────────────────────────────
+let _seqList = [];
+
+function seqAdd() {
+  const zone = parseInt(document.getElementById('seq-zone').value);
+  const mins = parseInt(document.getElementById('seq-dur').value);
+  if(!zone || !mins || mins < 1 || mins > 120) return;
+  _seqList.push({zone, minutes: mins});
+  renderSeqList();
+}
+
+function seqRemove(idx) {
+  _seqList.splice(idx, 1);
+  renderSeqList();
+}
+
+function seqClear() {
+  _seqList = [];
+  renderSeqList();
+  document.getElementById('seq-status').textContent = '';
+}
+
+function renderSeqList() {
+  const el = document.getElementById('seq-list');
+  if(_seqList.length === 0) {
+    el.innerHTML = '<div style="color:#888;font-size:12px">Zatím žádné zóny — přidej níže</div>';
+    return;
+  }
+  const total = _seqList.reduce((s,e) => s + e.minutes, 0);
+  el.innerHTML = _seqList.map((e,i) =>
+    `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #0f3460">
+      <span style="font-size:12px">${i+1}. Zóna ${e.zone} — ${e.minutes} min</span>
+      <button onclick="seqRemove(${i})" style="background:#e74c3c;color:#fff;border:none;border-radius:3px;padding:2px 7px;font-size:10px;cursor:pointer">&#10005;</button>
+    </div>`
+  ).join('') +
+  `<div style="font-size:11px;color:#aaa;margin-top:5px">Celkem: ${_seqList.length} zón · ${total} min</div>`;
+}
+
+async function runSequence() {
+  if(_seqList.length === 0) { alert('Přidej aspoň jednu zónu'); return; }
+  const r = await api('/api/run-sequence', 'POST', {sequence: _seqList});
+  if(r.ok) {
+    document.getElementById('seq-status').textContent = '&#10003; Sekvence spuštěna — '+r.count+' zón';
+    _seqList = [];
+    renderSeqList();
+    refreshDashboard();
+  } else {
+    document.getElementById('seq-status').textContent = '&#10007; Chyba: '+(r.error||'');
+  }
 }
 
 async function stopZone() {
@@ -592,7 +685,6 @@ extern void   triggerWeatherUpdate(void);
 //  GET /api/status
 // ═══════════════════════════════════════════════════════════════
 static void handleStatus() {
-  RunState rs = Zones_GetState();
   WeatherData wd = Weather_GetData();
 
   struct tm ti;
@@ -604,36 +696,41 @@ static void handleStatus() {
     strftime(timeBuf, sizeof(timeBuf), "%H:%M",    &ti);
   }
 
-  uint16_t elapsed = rs.running
-    ? (uint16_t)((millis() - rs.startMs) / 60000UL)
-    : 0;
-
   JsonDocument doc;
   doc["date"]          = dateBuf;
   doc["time"]          = timeBuf;
   doc["nextRun"]       = Scheduler_NextRunString();
-  doc["running"]       = rs.running;
-  doc["zone"]          = rs.zone;
-  doc["elapsed"]       = elapsed;
-  doc["duration"]      = rs.durationMin;
+  doc["running"]       = Zones_AnyRunning();
+  doc["runningCount"]  = Zones_RunningCount();
+  doc["queueCount"]    = Queue_Count();
   doc["weatherSkip"]   = Weather_ShouldSkip();
   doc["weatherStatus"] = Weather_StatusString();
   doc["rain24h"]       = wd.past24hRainMm;
   doc["tempC"]         = wd.currentTempC;
 
-  if (rs.running && rs.zone > 0) {
-    ZoneConfig zc = Storage_GetZone(rs.zone);
-    doc["zoneName"] = zc.name;
+  // Běžící zóny (může jich být více při paralelním módu)
+  JsonArray running = doc["runningZones"].to<JsonArray>();
+  for (uint8_t z = 1; z <= ZONE_COUNT; z++) {
+    ZoneRunState zrs = Zone_GetState(z);
+    if (!zrs.running) continue;
+    ZoneConfig zc = Storage_GetZone(z);
+    JsonObject rz = running.add<JsonObject>();
+    rz["zone"]     = z;
+    rz["name"]     = zc.name;
+    rz["duration"] = zrs.durationMin;
+    rz["elapsed"]  = (uint16_t)((millis() - zrs.startMs) / 60000UL);
   }
 
+  // Všechny zóny pro grid
   JsonArray zones = doc["zones"].to<JsonArray>();
   for (uint8_t z = 1; z <= ZONE_COUNT; z++) {
-    ZoneConfig zc = Storage_GetZone(z);
+    ZoneConfig zc    = Storage_GetZone(z);
+    ZoneRunState zrs = Zone_GetState(z);
     JsonObject zo = zones.add<JsonObject>();
     zo["id"]      = z;
     zo["name"]    = zc.name;
     zo["enabled"] = zc.enabled;
-    zo["running"] = (rs.running && rs.zone == z);
+    zo["running"] = zrs.running;
   }
 
   String out; serializeJson(doc, out);
@@ -698,21 +795,65 @@ static void handlePostZones() {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/run
+//  Body: {"zone":1,"minutes":5,"parallel":false}
 // ═══════════════════════════════════════════════════════════════
 static void handleRun() {
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
-  uint8_t  zone = doc["zone"].as<uint8_t>();
-  uint16_t mins = doc["minutes"].as<uint16_t>();
-  bool ok = Zone_Start(zone, mins, RUN_MANUAL);
+  uint8_t  zone     = doc["zone"].as<uint8_t>();
+  uint16_t mins     = doc["minutes"].as<uint16_t>();
+  bool     parallel = doc["parallel"] | false;
+  bool ok = Zone_Start(zone, mins, RUN_MANUAL, parallel);
   sendJson(ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Neplatné parametry\"}");
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/run-sequence
+//  Body: {"sequence":[{"zone":1,"minutes":20},{"zone":2,"minutes":15}]}
+// ═══════════════════════════════════════════════════════════════
+static void handleRunSequence() {
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"JSON error\"}");
+    return;
+  }
+  JsonArray seq = doc["sequence"];
+  if (!seq || seq.size() == 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Prázdná sekvence\"}");
+    return;
+  }
+
+  Zone_StopAll();   // zastaví vše a vymaže frontu
+
+  bool first = true;
+  int  count = 0;
+  for (JsonObject entry : seq) {
+    uint8_t  z = entry["zone"].as<uint8_t>();
+    uint16_t m = entry["minutes"].as<uint16_t>();
+    if (z < 1 || z > ZONE_COUNT || m == 0 || m > 120) continue;
+    if (first) {
+      Zone_Start(z, m, RUN_SEQUENCE, false);
+      first = false;
+    } else {
+      Queue_Add(z, m);
+    }
+    count++;
+  }
+
+  if (count == 0) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Žádné platné zóny\"}");
+    return;
+  }
+  char buf[48];
+  snprintf(buf, sizeof(buf), "{\"ok\":true,\"count\":%d}", count);
+  sendJson(String(buf));
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/stop
 // ═══════════════════════════════════════════════════════════════
 static void handleStop() {
-  Zone_Stop();
+  Zone_StopAll();
   sendJson("{\"ok\":true}");
 }
 
@@ -720,11 +861,11 @@ static void handleStop() {
 //  POST /api/test — každá zóna ~3 s
 // ═══════════════════════════════════════════════════════════════
 static void handleTest() {
-  Zone_Stop();  // zastav případně běžící zónu
+  Zone_StopAll();
   for (uint8_t z = 1; z <= ZONE_COUNT; z++) {
-    Zone_Start(z, 1, RUN_TEST);   // 1 min max, zastavíme po 3 s
+    Zone_Start(z, 1, RUN_TEST, false);
     delay(3000);
-    Zone_Stop();
+    Zone_Stop(z);
     delay(300);
   }
   sendJson("{\"ok\":true}");
@@ -859,6 +1000,7 @@ void WebUI_Init(void) {
   server.on("/api/zones",           HTTP_GET,  handleGetZones);
   server.on("/api/zones",           HTTP_POST, handlePostZones);
   server.on("/api/run",             HTTP_POST, handleRun);
+  server.on("/api/run-sequence",    HTTP_POST, handleRunSequence);
   server.on("/api/stop",            HTTP_POST, handleStop);
   server.on("/api/test",            HTTP_POST, handleTest);
   server.on("/api/weather",         HTTP_GET,  handleGetWeather);
