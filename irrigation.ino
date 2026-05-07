@@ -270,7 +270,12 @@ void loop() {
   if (now - lastStatusPrint >= 60000UL) {
     lastStatusPrint = now;
     struct tm ti;
-    RunState rs = Zones_GetState();
+    bool anyRunning = Zones_AnyRunning();
+    int  runCount   = Zones_RunningCount();
+
+    String stavStr = anyRunning
+      ? (String(runCount) + " zón" + (runCount == 1 ? "a" : "y") + " běží")
+      : "Klidový stav";
 
     if (getLocalTime(&ti)) {
       char buf[20];
@@ -279,13 +284,15 @@ void loop() {
         buf,
         apActive ? "AP" : "WiFi",
         wifiConnected || apActive ? wifiIP.c_str() : "off",
-        rs.running ? ("Zóna " + String(rs.zone) + " běží").c_str() : "Klidový stav");
+        stavStr.c_str());
     } else {
       Serial.printf("[STATUS] Čas nesync | %s:%s | %s\n",
         apActive ? "AP" : "WiFi",
         wifiConnected || apActive ? wifiIP.c_str() : "off",
-        rs.running ? ("Zóna " + String(rs.zone) + " běží").c_str() : "Klidový stav");
+        stavStr.c_str());
     }
+    if (Queue_Count() > 0)
+      Serial.printf("[STATUS] Fronta: %d zón čeká\n", Queue_Count());
     Serial.printf("[STATUS] Počasí: %s\n", Weather_StatusString().c_str());
     Serial.printf("[STATUS] Příští zálivka: %s\n", Scheduler_NextRunString().c_str());
   }
