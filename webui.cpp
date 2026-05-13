@@ -133,6 +133,21 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
     <div id="weather-alert"></div>
     <div class="info" id="weather-detail">Načítám...</div>
   </div>
+
+  <div class="card" id="pause-card">
+    <h3>&#128683; Pozastavit zálivku</h3>
+    <div id="pause-status" style="margin-bottom:10px"></div>
+    <div class="row" id="pause-form">
+      <div>
+        <label>Pozastavit do (včetně)</label>
+        <input type="date" id="pause-date">
+      </div>
+      <div style="flex:0">
+        <button class="btn btn-orange" onclick="setPause()" style="margin-top:20px">&#128683; Pozastavit</button>
+      </div>
+    </div>
+    <button class="btn btn-gray btn-sm" id="pause-cancel-btn" onclick="clearPause()" style="display:none;margin-top:8px">&#10003; Zrušit pauzu — obnovit zálivku</button>
+  </div>
 </div>
 
 <!-- ── ZÓNY ───────────────────────────────────────────────────── -->
@@ -383,6 +398,47 @@ async function refreshDashboard() {
 }
 setInterval(refreshDashboard, 3000);
 refreshDashboard();
+loadPauseStatus();
+
+// ── Pauza zálivky ──────────────────────────────────────────────
+async function loadPauseStatus() {
+  const d = await api('/api/pause');
+  const statusEl = document.getElementById('pause-status');
+  const formEl   = document.getElementById('pause-form');
+  const cancelEl = document.getElementById('pause-cancel-btn');
+  if(d.active) {
+    const dt = new Date(d.until * 1000);
+    statusEl.innerHTML = `<div class="alert alert-warn">&#128683; Zálivka pozastavena do <strong>${dt.toLocaleDateString('cs-CZ')}</strong></div>`;
+    formEl.style.display   = 'none';
+    cancelEl.style.display = 'inline-block';
+  } else {
+    statusEl.innerHTML = '<div class="info">Zálivka běží normálně.</div>';
+    formEl.style.display   = 'flex';
+    cancelEl.style.display = 'none';
+    // Nastav výchozí datum na konec aktuálního měsíce
+    if(!document.getElementById('pause-date').value) {
+      const now = new Date();
+      const lastDay = new Date(now.getFullYear(), now.getMonth()+1, 0);
+      document.getElementById('pause-date').value = lastDay.toISOString().split('T')[0];
+    }
+  }
+}
+
+async function setPause() {
+  const val = document.getElementById('pause-date').value;
+  if(!val) { alert('Vyber datum'); return; }
+  const d = new Date(val);
+  d.setHours(23, 59, 59, 0);
+  const until = Math.floor(d.getTime() / 1000);
+  const r = await api('/api/pause', 'POST', {until});
+  if(r.ok) { await loadPauseStatus(); }
+  else alert('&#10007; Chyba: '+(r.error||''));
+}
+
+async function clearPause() {
+  const r = await api('/api/pause', 'POST', {until: 0});
+  if(r.ok) { await loadPauseStatus(); }
+}
 
 // ── Zóny (konfigurace) ───────────────────────────────────────────
 // bit0=Po, bit1=Út, bit2=St, bit3=Čt, bit4=Pá, bit5=So, bit6=Ne
@@ -907,6 +963,45 @@ static void handlePostWeather() {
   ws.rainSkipEnabled      = doc["skipPast"].as<bool>();
   ws.forecastSkipEnabled  = doc["skipFore"].as<bool>();
   Storage_SetWeather(ws);
+  sendJson("{\"ok\":true}");
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GET /api/pause
+// ═══════════════════════════════════════════════════════════════
+static void handleGetPause() {
+  time_t pauseUntil = Storage_GetPauseUntil();
+  time_t now        = time(nullptr);
+  bool   active     = (pauseUntil > 0 && now < pauseUntil);
+  // Pokud vypršela, automaticky vymaž
+  if (pauseUntil > 0 && now >= pauseUntil) {
+    Storage_SetPauseUntil(0);
+    pauseUntil = 0;
+    active = false;
+  }
+  char buf[64];
+  snprintf(buf, sizeof(buf), "{\"active\":%s,\"until\":%ld}",
+           active ? "true" : "false", (long)pauseUntil);
+  sendJson(String(buf));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/pause
+//  Body: {"until": 1234567890}  — unix timestamp; 0 = zrušit pauzu
+// ═══════════════════════════════════════════════════════════════
+static void handleSetPause() {
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  time_t until = (time_t)doc["until"].as<long>();
+  Storage_SetPauseUntil(until);
+  if (until > 0) {
+    struct tm *ti = localtime(&until);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%d.%m.%Y", ti);
+    Serial.printf("[WEB] Zálivka pozastavena do %s\n", buf);
+  } else {
+    Serial.println("[WEB] Pauza zálivky zrušena");
+  }
   sendJson("{\"ok\":true}");
 }
 

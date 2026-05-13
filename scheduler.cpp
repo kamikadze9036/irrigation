@@ -24,6 +24,18 @@ void Scheduler_Tick(void) {
   static int lastTriggeredHHMM = -1;
   int currentHHMM = t.tm_hour * 100 + t.tm_min;
 
+  // Kontrola pauzy (dovolená mód)
+  time_t pauseUntil = Storage_GetPauseUntil();
+  if (pauseUntil > 0 && time(nullptr) < pauseUntil) {
+    Serial.println("[SCH] Zálivka pozastavena (dovolená mód)");
+    return;
+  }
+  // Pauza vypršela — automaticky ji vymažeme
+  if (pauseUntil > 0 && time(nullptr) >= pauseUntil) {
+    Storage_SetPauseUntil(0);
+    Serial.println("[SCH] Pauza zálivky skončila — obnovuji normální provoz");
+  }
+
   // Kontrola počasí
   if (Weather_ShouldSkip()) return;
 

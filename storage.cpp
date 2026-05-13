@@ -91,3 +91,17 @@ void Storage_SetSystem(const SystemSettings &ss) {
   prefs.putBytes("cfg", &ss, sizeof(ss));
   prefs.end();
 }
+
+// ── Pauza zálivky (uložena jako samostatný klíč — neovlivní ostatní nastavení) ──
+time_t Storage_GetPauseUntil(void) {
+  openNs("pause", false);
+  long val = prefs.getLong("until", 0);
+  prefs.end();
+  return (time_t)val;
+}
+
+void Storage_SetPauseUntil(time_t t) {
+  openNs("pause", true);
+  prefs.putLong("until", (long)t);
+  prefs.end();
+}

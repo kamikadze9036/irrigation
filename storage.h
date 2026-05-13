@@ -43,3 +43,8 @@ WeatherSettings Storage_GetWeather(void);
 void            Storage_SetWeather(const WeatherSettings &ws);
 SystemSettings  Storage_GetSystem(void);
 void            Storage_SetSystem(const SystemSettings &ss);
+
+// ── Pauza zálivky ────────────────────────────────────────────────
+// pauseUntil = unix timestamp konce pauzy; 0 = pauza není aktivní
+time_t          Storage_GetPauseUntil(void);
+void            Storage_SetPauseUntil(time_t t);  // 0 = zrušit pauzu
