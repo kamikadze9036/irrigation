@@ -62,6 +62,7 @@ Master ventil (Relay 7):
 - **mDNS** — admin dostupný jako `http://irrigation.local` (v STA módu)
 - **WiFi STA reconnect** — automatické znovupřipojení k domácí síti každých 30 s
 - **Záložní AP mód** — pokud domácí WiFi není dostupná, ESP32 spustí vlastní přístupový bod; každých 5 minut se tiše pokouší přepnout zpátky do STA
+- **Dovolená mód (pauza zálivky)** — přes web rozhraní lze nastavit datum, do kdy se zálivka nepouští; po vypršení se automaticky obnoví normální provoz
 
 ---
 
@@ -91,9 +92,9 @@ Start
 
 | Záložka | Co tam najdeš |
 |---|---|
-| **Dashboard** | Přehled všech zón, běžící zálivka s progress barem, stav počasí, příští naplánovaná zálivka |
+| **Dashboard** | Přehled všech zón, běžící zálivka s progress barem, stav počasí, příští naplánovaná zálivka, karta Dovolená mód |
 | **Zóny & Rozvrhy** | Název zóny, zapnutí/vypnutí, 3 programy (čas, délka, dny v týdnu) |
-| **Manuální** | Spustit libovolnou zónu na zvolený čas, okamžité zastavení, test všech relé |
+| **Manuální** | Spustit libovolnou zónu na zvolený čas (paralelně nebo sekvenčně), okamžité zastavení, test všech relé |
 | **Počasí** | Aktuální srážky, předpověď, teplota + nastavení prahů pro přeskočení zálivky |
 | **Nastavení** | Master ventil, prodlevy, NTP server, info o zařízení, restart |
 | **Log** | Historie posledních 40 zálivek s časem, zónou, délkou a typem spuštění |
@@ -183,6 +184,8 @@ irrigation/
 | GET | `/api/log` | Log zálivek (posledních 40) |
 | POST | `/api/log/clear` | Vymazat log |
 | POST | `/api/restart` | Restartovat ESP32 |
+| GET | `/api/pause` | Stav pauzy — `{"active":true,"until":"2026-05-31"}` |
+| POST | `/api/pause` | `{"until":"2026-05-31"}` — nastavit pauzu; `{"until":""}` — zrušit |
 
 ---
 
@@ -212,3 +215,4 @@ Příklady:
 | Verze | Popis |
 |---|---|
 | 1.0.0 | Základní verze — 6 zón, 3 programy, počasí Open-Meteo, web admin, WiFi AP záložní mód |
+| 1.1.0 | Paralelní a sekvenční spouštění více zón, dovolená mód (pauza zálivky do nastaveného data) |
