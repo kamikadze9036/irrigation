@@ -103,6 +103,29 @@ Start
 
 ## Nahrání do ESP32
 
+### Zapojení programátoru (ESP32 s USB-C jako flasher)
+
+Na flashovacím ESP32 je **GPIO0 spojen s GND** — tím se jeho vlastní čip deaktivuje a USB-UART čip (CP2102/CH340) funguje jako průchodový most.
+
+```
+Flashovací ESP32             Hlavní ESP32 (irrigation)
+(GPIO0 → GND)
+
+  TX  ──────────────────────►  RX  (GPIO3)
+  RX  ◄──────────────────────  TX  (GPIO1)
+  GND ────────────────────────  GND
+```
+
+> Hlavní ESP32 potřebuje **vlastní napájení** (5 V / min. 1 A) — přes 3 dráty napájení nejde.
+
+### Postup nahrání firmware
+
+1. Připoj flashovací ESP32 přes USB-C k PC
+2. Na hlavním ESP32: drž tlačítko **BOOT**
+3. Zmáčkni a pusť **EN/RST**
+4. Pusť **BOOT** — ESP32 je teď v boot módu
+5. V Arduino IDE vyber správný port a klikni **Upload**
+
 ### Potřebné knihovny (Arduino Library Manager)
 - **ArduinoJson** — Benoit Blanchon
 
