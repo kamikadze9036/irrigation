@@ -265,6 +265,23 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
 <!-- ── NASTAVENÍ ────────────────────────────────────────────────── -->
 <div class="tab" id="tab-settings">
   <div class="card">
+    <h3>&#128336; Ruční nastavení času</h3>
+    <p class="info" style="margin-bottom:10px">Pokud ESP32 nemá přístup k internetu (AP mód), čas lze nastavit ručně. Uloží se do RAM — po restartu je třeba nastavit znovu.</p>
+    <button class="btn btn-blue" onclick="setTimeFromBrowser()">&#128336; Synchronizovat čas z prohlížeče</button>
+    <hr class="separator">
+    <div class="row" style="margin-top:4px">
+      <div>
+        <label>Nebo zadej čas ručně</label>
+        <input type="datetime-local" id="manual-time">
+      </div>
+      <div style="flex:0">
+        <button class="btn btn-gray" onclick="setTimeManual()" style="margin-top:20px">Nastavit</button>
+      </div>
+    </div>
+    <div id="time-set-status" style="margin-top:8px;font-size:12px"></div>
+  </div>
+
+  <div class="card">
     <h3>&#128295; Systémové nastavení</h3>
     <label><input type="checkbox" id="ss-master"> Použít master ventil / čerpadlo (Relay 7)</label>
     <div class="row" style="margin-top:10px">
@@ -322,7 +339,7 @@ function showTab(id, btn) {
   if(btn) btn.classList.add('active');
   if(id==='zones') loadZones();
   if(id==='weather') loadWeatherSettings();
-  if(id==='settings') loadSystem();
+  if(id==='settings') { loadSystem(); prefillManualTime(); }
   if(id==='log') loadLog();
   if(id==='manual') loadManualZones();
 }
@@ -654,6 +671,42 @@ async function fetchWeather() {
   document.getElementById('w-updated').textContent = 'Aktualizuji...';
   await api('/api/weather/refresh', 'POST', {});
   setTimeout(loadWeatherSettings, 4000);
+}
+
+// ── Ruční čas ──────────────────────────────────────────────────────
+function prefillManualTime() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const local = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  document.getElementById('manual-time').value = local;
+}
+
+async function setTimeFromBrowser() {
+  const epoch = Math.floor(Date.now() / 1000);
+  const r = await api('/api/time', 'POST', {epoch});
+  const el = document.getElementById('time-set-status');
+  if(r.ok) {
+    el.innerHTML = '&#10003; Čas nastaven: ' + new Date().toLocaleString('cs-CZ');
+    el.style.color = '#00d4aa';
+  } else {
+    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.style.color = '#e74c3c';
+  }
+}
+
+async function setTimeManual() {
+  const val = document.getElementById('manual-time').value;
+  if(!val) { alert('Vyber datum a čas'); return; }
+  const epoch = Math.floor(new Date(val).getTime() / 1000);
+  const r = await api('/api/time', 'POST', {epoch});
+  const el = document.getElementById('time-set-status');
+  if(r.ok) {
+    el.innerHTML = '&#10003; Čas nastaven: ' + new Date(val).toLocaleString('cs-CZ');
+    el.style.color = '#00d4aa';
+  } else {
+    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.style.color = '#e74c3c';
+  }
 }
 
 // ── Systém ──────────────────────────────────────────────────────────
@@ -1087,6 +1140,27 @@ static void handleRestart() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  POST /api/time
+//  Body: {"epoch": 1234567890}  — nastaví systémový čas (RAM, do restartu)
+// ═══════════════════════════════════════════════════════════════
+static void handleSetTime() {
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  long epoch = doc["epoch"].as<long>();
+  if (epoch < 1000000000L) {   // sanity check — rok 2001+
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Neplatný epoch\"}");
+    return;
+  }
+  struct timeval tv = { (time_t)epoch, 0 };
+  settimeofday(&tv, nullptr);
+  struct tm *ti = localtime((time_t*)&epoch);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M:%S", ti);
+  Serial.printf("[WEB] Čas nastaven ručně: %s\n", buf);
+  sendJson("{\"ok\":true}");
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Init & Handle
 // ═══════════════════════════════════════════════════════════════
 void WebUI_Init(void) {
@@ -1105,6 +1179,9 @@ void WebUI_Init(void) {
   server.on("/api/system",          HTTP_POST, handlePostSystem);
   server.on("/api/log",             HTTP_GET,  handleGetLog);
   server.on("/api/log/clear",       HTTP_POST, handleLogClear);
+  server.on("/api/pause",           HTTP_GET,  handleGetPause);
+  server.on("/api/pause",           HTTP_POST, handleSetPause);
+  server.on("/api/time",            HTTP_POST, handleSetTime);
   server.on("/api/restart",         HTTP_POST, handleRestart);
   server.begin();
   Serial.println("[WEB] HTTP server spuštěn na portu 80");
