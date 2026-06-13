@@ -750,21 +750,34 @@ async function loadWiFi() {
 
 async function wifiScan() {
   const scanEl = document.getElementById('wifi-scan-result');
-  scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">&#128269; Skenuji sítě... (2–4 s)</span>';
-  const d = await api('/api/wifi/scan');
-  if(!d.networks || d.networks.length === 0) {
-    scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">Žádné sítě nenalezeny</span>';
-    return;
-  }
-  d.networks.sort((a,b) => b.rssi - a.rssi);
-  scanEl.innerHTML = '<div style="font-size:11px;color:#aaa;margin-bottom:4px">Nalezené sítě — klikni pro výběr:</div>' +
-    d.networks.map(n =>
-      `<div onclick="document.getElementById('wifi-ssid').value='${n.ssid.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}'"
-            style="padding:5px 10px;margin:2px 0;background:#0f3460;border-radius:5px;cursor:pointer;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-        <span>${n.secure ? '&#128274; ' : '&#128275; '}${n.ssid}</span>
-        <span style="color:#aaa;font-size:11px">${n.rssi} dBm</span>
-      </div>`
-    ).join('');
+  scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">&#128269; Zahajuji scan...</span>';
+  await api('/api/wifi/scan');  // spustí async scan
+
+  let attempts = 0;
+  const poll = async () => {
+    const d = await api('/api/wifi/scan');
+    if(d.scanning) {
+      attempts++;
+      scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">&#128269; Skenuji sítě... (' + attempts + ' s)</span>';
+      if(attempts < 15) setTimeout(poll, 1000);
+      else scanEl.innerHTML = '<span style="color:#e74c3c;font-size:12px">&#10007; Scan timeout</span>';
+      return;
+    }
+    if(!d.networks || d.networks.length === 0) {
+      scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">Žádné sítě nenalezeny</span>';
+      return;
+    }
+    d.networks.sort((a,b) => b.rssi - a.rssi);
+    scanEl.innerHTML = '<div style="font-size:11px;color:#aaa;margin-bottom:4px">Nalezené sítě — klikni pro výběr:</div>' +
+      d.networks.map(n =>
+        `<div onclick="document.getElementById('wifi-ssid').value='${n.ssid.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}'"
+              style="padding:5px 10px;margin:2px 0;background:#0f3460;border-radius:5px;cursor:pointer;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+          <span>${n.secure ? '&#128274; ' : '&#128275; '}${n.ssid}</span>
+          <span style="color:#aaa;font-size:11px">${n.rssi} dBm</span>
+        </div>`
+      ).join('');
+  };
+  setTimeout(poll, 1500);
 }
 
 async function wifiSave(doRestart) {
@@ -1303,14 +1316,31 @@ static void handlePostWiFi() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  GET /api/wifi/scan — prohledá dostupné sítě (~2-4 s)
+//  GET /api/wifi/scan — async scan (volat opakovaně dokud scanning=false)
+//  První volání spustí scan a vrátí {"scanning":true}
+//  Další volání vrací stav; po dokončení vrátí {"scanning":false,"networks":[...]}
 // ═══════════════════════════════════════════════════════════════
 static void handleWiFiScan() {
-  Serial.println("[WEB] WiFi scan zahájen...");
-  int n = WiFi.scanNetworks();
-  Serial.printf("[WEB] WiFi scan dokončen — %d sítí\n", n);
+  int n = WiFi.scanComplete();
 
+  if (n == WIFI_SCAN_RUNNING) {
+    // Scan stále probíhá
+    sendJson("{\"scanning\":true}");
+    return;
+  }
+
+  if (n == WIFI_SCAN_FAILED || n < 0) {
+    // Spustit nový async scan
+    Serial.println("[WEB] WiFi async scan zahájen");
+    WiFi.scanNetworks(true);  // true = asynchronní, neblokuje
+    sendJson("{\"scanning\":true}");
+    return;
+  }
+
+  // Scan dokončen — vrátit výsledky
+  Serial.printf("[WEB] WiFi scan dokončen — %d sítí\n", n);
   JsonDocument doc;
+  doc["scanning"] = false;
   JsonArray nets = doc["networks"].to<JsonArray>();
   for (int i = 0; i < n && i < 20; i++) {
     JsonObject net = nets.add<JsonObject>();
