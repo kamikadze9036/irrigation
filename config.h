@@ -6,8 +6,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 // ── WiFi — připojení k domácí síti ──────────────────────────────
-#define WIFI_SSID        "pfkamikadze"
-#define WIFI_PASSWORD    "ledenunor12"
+#define WIFI_SSID        ""
+#define WIFI_PASSWORD    ""
 #define WIFI_HOSTNAME    "irrigation"      // → http://irrigation.local
 
 // ── WiFi AP — záložní přístupový bod (když domácí WiFi není dostupná) ──
