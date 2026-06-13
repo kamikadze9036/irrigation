@@ -105,3 +105,29 @@ void Storage_SetPauseUntil(time_t t) {
   prefs.putLong("until", (long)t);
   prefs.end();
 }
+
+// ── WiFi přihlašovací údaje ──────────────────────────────────────
+WiFiCredentials Storage_GetWiFiCreds(void) {
+  WiFiCredentials creds = {};
+  openNs("wificred", false);
+  prefs.getBytes("cfg", &creds, sizeof(creds));
+  prefs.end();
+  return creds;
+}
+
+void Storage_SetWiFiCreds(const WiFiCredentials &creds) {
+  openNs("wificred", true);
+  prefs.putBytes("cfg", &creds, sizeof(creds));
+  prefs.end();
+}
+
+void Storage_ClearWiFiCreds(void) {
+  openNs("wificred", true);
+  prefs.clear();
+  prefs.end();
+}
+
+bool Storage_HasWiFiCreds(void) {
+  WiFiCredentials c = Storage_GetWiFiCreds();
+  return c.ssid[0] != '\0';
+}

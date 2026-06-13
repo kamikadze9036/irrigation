@@ -100,10 +100,20 @@ static void startAP() {
 //  Vrací true pokud se podařilo připojit
 // ═══════════════════════════════════════════════════════════════
 static bool wifiConnectSTA() {
-  Serial.printf("[WiFi] Připojuji k '%s'...\n", WIFI_SSID);
+  const char *ssid, *pass;
+  WiFiCredentials saved = Storage_GetWiFiCreds();
+  if (saved.ssid[0] != '\0') {
+    ssid = saved.ssid;
+    pass = saved.password;
+    Serial.printf("[WiFi] Používám uložené údaje: '%s'\n", ssid);
+  } else {
+    ssid = WIFI_SSID;
+    pass = WIFI_PASSWORD;
+  }
+  Serial.printf("[WiFi] Připojuji k '%s'...\n", ssid);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(WIFI_HOSTNAME);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid, pass);
 
   int tries = 0;
   while (WiFi.status() != WL_CONNECTED && tries++ < 30) {  // max 15 s

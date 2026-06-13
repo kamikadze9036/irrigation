@@ -48,3 +48,13 @@ void            Storage_SetSystem(const SystemSettings &ss);
 // pauseUntil = unix timestamp konce pauzy; 0 = pauza není aktivní
 time_t          Storage_GetPauseUntil(void);
 void            Storage_SetPauseUntil(time_t t);  // 0 = zrušit pauzu
+
+// ── WiFi přihlašovací údaje (uložené přes web UI) ─────────────────
+struct WiFiCredentials {
+  char ssid[64];
+  char password[64];
+};
+WiFiCredentials Storage_GetWiFiCreds(void);
+void            Storage_SetWiFiCreds(const WiFiCredentials &creds);
+void            Storage_ClearWiFiCreds(void);
+bool            Storage_HasWiFiCreds(void);  // true pokud jsou uloženy

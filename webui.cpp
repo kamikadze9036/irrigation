@@ -265,6 +265,29 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
 <!-- ── NASTAVENÍ ────────────────────────────────────────────────── -->
 <div class="tab" id="tab-settings">
   <div class="card">
+    <h3>&#128246; WiFi nastavení</h3>
+    <div id="wifi-current" class="info" style="margin-bottom:10px">Načítám...</div>
+    <div id="wifi-scan-result" style="margin-bottom:8px"></div>
+    <div class="row">
+      <div>
+        <label>SSID sítě</label>
+        <input type="text" id="wifi-ssid" placeholder="Název WiFi sítě">
+      </div>
+      <div>
+        <label>Heslo</label>
+        <input type="password" id="wifi-pass" placeholder="Heslo WiFi">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      <button class="btn btn-gray" onclick="wifiScan()">&#128269; Prohledat sítě</button>
+      <button class="btn btn-blue" onclick="wifiSave(false)">&#128190; Uložit</button>
+      <button class="btn btn-green" onclick="wifiSave(true)">&#10003; Uložit &amp; připojit (restart)</button>
+      <button class="btn btn-gray btn-sm" onclick="wifiClear()">Vymazat (použít config.h)</button>
+    </div>
+    <div id="wifi-status" style="margin-top:8px;font-size:12px"></div>
+  </div>
+
+  <div class="card">
     <h3>&#128336; Ruční nastavení času</h3>
     <p class="info" style="margin-bottom:10px">Pokud ESP32 nemá přístup k internetu (AP mód), čas lze nastavit ručně. Uloží se do RAM — po restartu je třeba nastavit znovu.</p>
     <button class="btn btn-blue" onclick="setTimeFromBrowser()">&#128336; Synchronizovat čas z prohlížeče</button>
@@ -339,7 +362,7 @@ function showTab(id, btn) {
   if(btn) btn.classList.add('active');
   if(id==='zones') loadZones();
   if(id==='weather') loadWeatherSettings();
-  if(id==='settings') { loadSystem(); prefillManualTime(); }
+  if(id==='settings') { loadSystem(); prefillManualTime(); loadWiFi(); }
   if(id==='log') loadLog();
   if(id==='manual') loadManualZones();
 }
@@ -706,6 +729,74 @@ async function setTimeManual() {
   } else {
     el.textContent = '&#10007; Chyba: ' + (r.error || '');
     el.style.color = '#e74c3c';
+  }
+}
+
+// ── WiFi nastavení ─────────────────────────────────────────────────
+async function loadWiFi() {
+  const d = await api('/api/wifi');
+  const el = document.getElementById('wifi-current');
+  if(d.connected) {
+    el.innerHTML = '&#10003; Připojeno: <strong>' + d.currentSSID + '</strong>';
+  } else {
+    el.innerHTML = '&#9888; Není připojeno k domácí WiFi (AP mód)';
+  }
+  if(d.hasCreds) {
+    document.getElementById('wifi-ssid').value = d.savedSSID;
+    document.getElementById('wifi-pass').placeholder = '(heslo uloženo — ponech prázdné pro zachování)';
+  }
+}
+
+async function wifiScan() {
+  const scanEl = document.getElementById('wifi-scan-result');
+  scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">&#128269; Skenuji sítě... (2–4 s)</span>';
+  const d = await api('/api/wifi/scan');
+  if(!d.networks || d.networks.length === 0) {
+    scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">Žádné sítě nenalezeny</span>';
+    return;
+  }
+  d.networks.sort((a,b) => b.rssi - a.rssi);
+  scanEl.innerHTML = '<div style="font-size:11px;color:#aaa;margin-bottom:4px">Nalezené sítě — klikni pro výběr:</div>' +
+    d.networks.map(n =>
+      `<div onclick="document.getElementById('wifi-ssid').value='${n.ssid.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}'"
+            style="padding:5px 10px;margin:2px 0;background:#0f3460;border-radius:5px;cursor:pointer;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+        <span>${n.secure ? '&#128274; ' : '&#128275; '}${n.ssid}</span>
+        <span style="color:#aaa;font-size:11px">${n.rssi} dBm</span>
+      </div>`
+    ).join('');
+}
+
+async function wifiSave(doRestart) {
+  const ssid = document.getElementById('wifi-ssid').value.trim();
+  const pass = document.getElementById('wifi-pass').value;
+  if(!ssid) { alert('Zadej SSID sítě'); return; }
+  if(doRestart && !confirm('ESP32 se restartuje a připojí k "' + ssid + '".\nPo restartu otevři http://irrigation.local nebo zkus IP adresu. Pokračovat?')) return;
+  const r = await api('/api/wifi', 'POST', {ssid, password: pass, restart: doRestart});
+  const el = document.getElementById('wifi-status');
+  if(r.ok) {
+    if(doRestart) {
+      el.innerHTML = '&#128260; Restartuji... Připoj se na domácí WiFi a otevři <strong>http://irrigation.local</strong>';
+      el.style.color = '#00d4aa';
+    } else {
+      el.innerHTML = '&#10003; Uloženo — změna se projeví po restartu';
+      el.style.color = '#00d4aa';
+    }
+  } else {
+    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.style.color = '#e74c3c';
+  }
+}
+
+async function wifiClear() {
+  if(!confirm('Vymazat uložené WiFi údaje?\nESP32 použije hodnoty napevno z firmware (config.h).')) return;
+  const r = await api('/api/wifi', 'POST', {ssid: '', password: ''});
+  if(r.ok) {
+    document.getElementById('wifi-ssid').value = '';
+    document.getElementById('wifi-pass').value = '';
+    document.getElementById('wifi-pass').placeholder = 'Heslo WiFi';
+    const el = document.getElementById('wifi-status');
+    el.innerHTML = '&#10003; Smazáno — po restartu použiji config.h';
+    el.style.color = '#00d4aa';
   }
 }
 
@@ -1161,6 +1252,77 @@ static void handleSetTime() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  GET /api/wifi — stav připojení + uložené credentials
+// ═══════════════════════════════════════════════════════════════
+static void handleGetWiFi() {
+  WiFiCredentials creds = Storage_GetWiFiCreds();
+  JsonDocument doc;
+  doc["hasCreds"]    = creds.ssid[0] != '\0';
+  doc["savedSSID"]   = creds.ssid;
+  doc["connected"]   = (WiFi.status() == WL_CONNECTED);
+  doc["currentSSID"] = WiFi.SSID();
+  String out; serializeJson(doc, out);
+  sendJson(out);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/wifi — uložit credentials (ssid="" = smazat)
+//  Body: {"ssid":"...","password":"...","restart":true/false}
+// ═══════════════════════════════════════════════════════════════
+static void handlePostWiFi() {
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  const char *ssid = doc["ssid"].as<const char*>();
+  const char *pass = doc["password"].as<const char*>();
+  bool doRestart   = doc["restart"] | false;
+
+  if (!ssid || strlen(ssid) == 0) {
+    Storage_ClearWiFiCreds();
+    Serial.println("[WEB] WiFi credentials smazány — použiji config.h");
+  } else {
+    WiFiCredentials creds = {};
+    strlcpy(creds.ssid, ssid, sizeof(creds.ssid));
+    // Pokud heslo prázdné a přihlašovací údaje již existují, zachovej staré heslo
+    if (pass && strlen(pass) > 0) {
+      strlcpy(creds.password, pass, sizeof(creds.password));
+    } else {
+      WiFiCredentials old = Storage_GetWiFiCreds();
+      strlcpy(creds.password, old.password, sizeof(creds.password));
+    }
+    Storage_SetWiFiCreds(creds);
+    Serial.printf("[WEB] WiFi credentials uloženy: SSID='%s'\n", ssid);
+  }
+
+  if (doRestart) {
+    sendJson("{\"ok\":true,\"restarting\":true}");
+    delay(500);
+    ESP.restart();
+  }
+  sendJson("{\"ok\":true}");
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GET /api/wifi/scan — prohledá dostupné sítě (~2-4 s)
+// ═══════════════════════════════════════════════════════════════
+static void handleWiFiScan() {
+  Serial.println("[WEB] WiFi scan zahájen...");
+  int n = WiFi.scanNetworks();
+  Serial.printf("[WEB] WiFi scan dokončen — %d sítí\n", n);
+
+  JsonDocument doc;
+  JsonArray nets = doc["networks"].to<JsonArray>();
+  for (int i = 0; i < n && i < 20; i++) {
+    JsonObject net = nets.add<JsonObject>();
+    net["ssid"]   = WiFi.SSID(i);
+    net["rssi"]   = WiFi.RSSI(i);
+    net["secure"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+  }
+  WiFi.scanDelete();
+  String out; serializeJson(doc, out);
+  sendJson(out);
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Init & Handle
 // ═══════════════════════════════════════════════════════════════
 void WebUI_Init(void) {
@@ -1182,6 +1344,9 @@ void WebUI_Init(void) {
   server.on("/api/pause",           HTTP_GET,  handleGetPause);
   server.on("/api/pause",           HTTP_POST, handleSetPause);
   server.on("/api/time",            HTTP_POST, handleSetTime);
+  server.on("/api/wifi",            HTTP_GET,  handleGetWiFi);
+  server.on("/api/wifi",            HTTP_POST, handlePostWiFi);
+  server.on("/api/wifi/scan",       HTTP_GET,  handleWiFiScan);
   server.on("/api/restart",         HTTP_POST, handleRestart);
   server.begin();
   Serial.println("[WEB] HTTP server spuštěn na portu 80");
