@@ -782,8 +782,11 @@ async function wifiScan() {
 
 async function wifiSave(doRestart) {
   const ssid = document.getElementById('wifi-ssid').value.trim();
-  const pass = document.getElementById('wifi-pass').value;
-  if(!ssid) { alert('Zadej SSID sítě'); return; }
+  const pass = document.getElementById('wifi-pass').value.trim();
+  if(!ssid) { alert('Zadej název WiFi sítě (SSID)'); return; }
+  if(!pass && !document.getElementById('wifi-pass').placeholder.includes('uloženo')) {
+    alert('Zadej heslo WiFi sítě'); return;
+  }
   if(doRestart && !confirm('ESP32 se restartuje a připojí k "' + ssid + '".\nPo restartu otevři http://irrigation.local nebo zkus IP adresu. Pokračovat?')) return;
   const r = await api('/api/wifi', 'POST', {ssid, password: pass, restart: doRestart});
   const el = document.getElementById('wifi-status');
@@ -1294,14 +1297,23 @@ static void handlePostWiFi() {
     Storage_ClearWiFiCreds();
     Serial.println("[WEB] WiFi credentials smazány — použiji config.h");
   } else {
+    WiFiCredentials oldCreds = Storage_GetWiFiCreds();
+    bool hasOldPassword = oldCreds.password[0] != '\0';
+    bool hasNewPassword = pass && strlen(pass) > 0;
+
+    // Odmítni pokud není heslo a nemáme ani staré
+    if (!hasNewPassword && !hasOldPassword) {
+      server.send(400, "application/json", "{\"ok\":false,\"error\":\"Zadej heslo WiFi sítě\"}");
+      return;
+    }
+
     WiFiCredentials creds = {};
     strlcpy(creds.ssid, ssid, sizeof(creds.ssid));
-    // Pokud heslo prázdné a přihlašovací údaje již existují, zachovej staré heslo
-    if (pass && strlen(pass) > 0) {
+    if (hasNewPassword) {
       strlcpy(creds.password, pass, sizeof(creds.password));
     } else {
-      WiFiCredentials old = Storage_GetWiFiCreds();
-      strlcpy(creds.password, old.password, sizeof(creds.password));
+      // Zachovat staré heslo
+      strlcpy(creds.password, oldCreds.password, sizeof(creds.password));
     }
     Storage_SetWiFiCreds(creds);
     Serial.printf("[WEB] WiFi credentials uloženy: SSID='%s'\n", ssid);

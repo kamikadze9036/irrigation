@@ -110,6 +110,11 @@ static bool wifiConnectSTA() {
     ssid = WIFI_SSID;
     pass = WIFI_PASSWORD;
   }
+  // Pokud je SSID prázdné, nemá smysl se pokoušet připojit
+  if (strlen(ssid) == 0) {
+    Serial.println("[WiFi] SSID je prázdné — přeskakuji STA pokus");
+    return false;
+  }
   Serial.printf("[WiFi] Připojuji k '%s'...\n", ssid);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(WIFI_HOSTNAME);
