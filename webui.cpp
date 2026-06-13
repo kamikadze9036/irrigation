@@ -10,6 +10,7 @@
 #include "config.h"
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
 #include <time.h>
 
 static WebServer server(80);
