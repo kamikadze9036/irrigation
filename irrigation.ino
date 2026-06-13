@@ -82,7 +82,7 @@ static void syncNTP() {
 static void startAP() {
   WiFi.disconnect(true);
   delay(100);
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);   // dual mode — AP + schopnost skenovat sítě
   WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
   apActive      = true;
   wifiConnected = false;
