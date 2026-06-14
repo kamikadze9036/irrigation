@@ -1,7 +1,7 @@
 # Irrigation Controller — ESP32-WROOM + 8-kanálové relé
 
 Automatický zavlažovací systém pro ESP32-WROOM s 8-kanálovým relé modulem (Active HIGH).  
-Webové admin rozhraní, týdenní rozvrhy, přeskočení zálivky podle počasí (Open-Meteo API), záložní WiFi AP mód, NTP, mDNS.
+Webové admin rozhraní, týdenní rozvrhy, přeskočení zálivky podle počasí (Open-Meteo API), záložní WiFi AP mód s nastavením sítě přes web UI, NTP, mDNS.
 
 ---
 
@@ -63,6 +63,9 @@ Master ventil (Relay 7):
 - **WiFi STA reconnect** — automatické znovupřipojení k domácí síti každých 30 s
 - **Záložní AP mód** — pokud domácí WiFi není dostupná, ESP32 spustí vlastní přístupový bod; každých 5 minut se tiše pokouší přepnout zpátky do STA
 - **Dovolená mód (pauza zálivky)** — přes web rozhraní lze nastavit datum, do kdy se zálivka nepouští; po vypršení se automaticky obnoví normální provoz
+- **Nastavení WiFi přes web UI** — v AP módu lze naskenovat dostupné sítě, vybrat a uložit credentials do NVS; ESP32 se restartuje a připojí k domácí WiFi
+- **Ruční nastavení času** — pokud není internet (AP mód), čas lze synchronizovat z prohlížeče jedním kliknutím; scheduler pak funguje normálně
+- **Maximální WiFi výkon** — TX výkon nastaven na 19.5 dBm v AP i STA módu
 
 ---
 
@@ -71,20 +74,25 @@ Master ventil (Relay 7):
 ```
 Start
   │
+  ├─► Uložené credentials v NVS? → použij je (priorita před config.h)
+  │
   ├─► Pokus o připojení k domácí WiFi (max 15 s)
   │     │
   │     ├─► Úspěch → STA mód
   │     │     http://irrigation.local  nebo  http://<IP>
   │     │     NTP sync, počasí funguje
   │     │
-  │     └─► Neúspěch → AP mód
+  │     └─► Neúspěch (nebo prázdné SSID) → AP mód
   │           Síť:  Zavlaha-AP  /  heslo: zavlaha123
   │           Admin: http://192.168.4.1
   │           Počasí a NTP nefungují (žádný internet)
   │           Každých 5 min zkusí přepnout zpět do STA
+  │           Nastavení → WiFi → scan sítí → uložit & restart
   │
   └─► Za provozu: výpadek domácí WiFi → po neúspěšném reconnectu přepne do AP
 ```
+
+> WiFi TX výkon nastaven na maximum (19.5 dBm) v obou módech.
 
 ---
 
@@ -96,7 +104,7 @@ Start
 | **Zóny & Rozvrhy** | Název zóny, zapnutí/vypnutí, 3 programy (čas, délka, dny v týdnu) |
 | **Manuální** | Spustit libovolnou zónu na zvolený čas (paralelně nebo sekvenčně), okamžité zastavení, test všech relé |
 | **Počasí** | Aktuální srážky, předpověď, teplota + nastavení prahů pro přeskočení zálivky |
-| **Nastavení** | Master ventil, prodlevy, NTP server, info o zařízení, restart |
+| **Nastavení** | Master ventil, prodlevy, NTP server, WiFi nastavení (scan + credentials), ruční čas, info o zařízení, restart |
 | **Log** | Historie posledních 40 zálivek s časem, zónou, délkou a typem spuštění |
 
 ---
@@ -150,9 +158,10 @@ Flashovací ESP32             Hlavní ESP32 (irrigation)
 ## Konfigurace (`config.h`)
 
 ```cpp
-// Domácí WiFi
-#define WIFI_SSID        "nazev_site"
-#define WIFI_PASSWORD    "heslo"
+// Domácí WiFi — fallback pokud nejsou uloženy credentials v NVS přes web UI
+// Nastav prázdné řetězce pokud chceš konfigurovat výhradně přes web (AP mód)
+#define WIFI_SSID        ""               // nebo "nazev_site"
+#define WIFI_PASSWORD    ""               // nebo "heslo"
 #define WIFI_HOSTNAME    "irrigation"      // → http://irrigation.local
 
 // Záložní AP (když domácí WiFi není dostupná)
@@ -209,6 +218,10 @@ irrigation/
 | POST | `/api/restart` | Restartovat ESP32 |
 | GET | `/api/pause` | Stav pauzy — `{"active":true,"until":"2026-05-31"}` |
 | POST | `/api/pause` | `{"until":"2026-05-31"}` — nastavit pauzu; `{"until":""}` — zrušit |
+| GET | `/api/wifi` | Stav WiFi připojení + uložené SSID |
+| POST | `/api/wifi` | `{"ssid":"...","password":"...","restart":true}` — uložit credentials |
+| GET | `/api/wifi/scan` | Async scan sítí — volat opakovaně dokud `scanning=false` |
+| POST | `/api/time` | `{"epoch":1234567890}` — ruční nastavení času (RAM, do restartu) |
 
 ---
 
@@ -239,3 +252,4 @@ Příklady:
 |---|---|
 | 1.0.0 | Základní verze — 6 zón, 3 programy, počasí Open-Meteo, web admin, WiFi AP záložní mód |
 | 1.1.0 | Paralelní a sekvenční spouštění více zón, dovolená mód (pauza zálivky do nastaveného data) |
+| 1.2.0 | WiFi nastavení přes web UI (scan + NVS credentials), ruční nastavení času, max TX výkon 19.5 dBm |
