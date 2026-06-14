@@ -437,7 +437,7 @@ async function refreshDashboard() {
     ).join('');
   }
 }
-setInterval(refreshDashboard, 3000);
+setInterval(refreshDashboard, 5000);
 refreshDashboard();
 loadPauseStatus();
 
