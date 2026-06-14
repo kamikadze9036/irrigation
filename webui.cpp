@@ -102,6 +102,13 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
   <button onclick="showTab('log',this)">&#128203; Log</button>
 </nav>
 
+<!-- ── STATUS ŘÁDEK ───────────────────────────────────────────── -->
+<div id="sysbar" style="background:#0a1628;border-bottom:1px solid #0f3460;padding:4px 16px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#667">
+  <span>&#128246; <span id="sb-wifi">--</span></span>
+  <span>&#127760; <span id="sb-ip">--</span></span>
+  <span>&#128336; <span id="sb-time2">--:--</span></span>
+</div>
+
 <!-- ── DASHBOARD ──────────────────────────────────────────────── -->
 <div class="tab active" id="tab-dashboard">
   <div class="running-banner" id="running-banner">
@@ -388,6 +395,11 @@ async function api(path, method='GET', body=null) {
 async function refreshDashboard() {
   const d = await api('/api/status');
   if(d.error) return;
+
+  // Status řádek
+  if(d.wifi) document.getElementById('sb-wifi').textContent = d.wifi;
+  if(d.ip)   document.getElementById('sb-ip').textContent   = d.ip;
+  if(d.time) document.getElementById('sb-time2').textContent = d.time;
 
   document.getElementById('st-date').textContent = d.date || '--';
   document.getElementById('st-time').textContent = d.time || '--:--';
@@ -924,6 +936,8 @@ static void handleStatus() {
   doc["weatherStatus"] = Weather_StatusString();
   doc["rain24h"]       = wd.past24hRainMm;
   doc["tempC"]         = wd.currentTempC;
+  doc["ip"]            = getSystemIP();
+  doc["wifi"]          = getWiFiSSID();
 
   // Běžící zóny (může jich být více při paralelním módu)
   JsonArray running = doc["runningZones"].to<JsonArray>();
