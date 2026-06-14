@@ -83,6 +83,7 @@ static void startAP() {
   WiFi.disconnect(true);
   delay(100);
   WiFi.mode(WIFI_AP_STA);   // dual mode — AP + schopnost skenovat sítě
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
   apActive      = true;
   wifiConnected = false;
@@ -117,6 +118,7 @@ static bool wifiConnectSTA() {
   }
   Serial.printf("[WiFi] Připojuji k '%s'...\n", ssid);
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.begin(ssid, pass);
 
