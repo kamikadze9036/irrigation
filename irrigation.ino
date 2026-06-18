@@ -195,6 +195,13 @@ void setup() {
   // Web server
   WebUI_Init();
 
+  // WebServer běží na core 0 — odděleno od hlavní smyčky (core 1)
+  xTaskCreatePinnedToCore(
+    [](void*){ for(;;){ WebUI_Handle(); vTaskDelay(1 / portTICK_PERIOD_MS); } },
+    "WebServer", 8192, nullptr, 1, nullptr, 0
+  );
+  Serial.println("[INIT] WebServer task spuštěn na core 0");
+
   // První weather update (odloženo — čekáme na síť)
   lastWeatherUpdate  = millis() - (unsigned long)(WEATHER_UPDATE_MIN - 1) * 60000UL;
   lastSchedulerTick  = millis();
@@ -210,8 +217,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // ── Web server ──────────────────────────────────────────────
-  WebUI_Handle();
+  // WebUI_Handle() běží na core 0 (viz setup) — zde není potřeba
 
   // ── Zones timeout (hlídá automatické vypnutí) ───────────────
   Zones_Tick();
@@ -314,5 +320,5 @@ void loop() {
     Serial.printf("[STATUS] Příští zálivka: %s\n", Scheduler_NextRunString().c_str());
   }
 
-  delay(5);   // uvolni CPU, aby WebServer zvládal paralelní requesty
+  delay(10);  // core 1 — WebServer je na core 0, stačí krátká pauza pro WDT
 }
