@@ -12,7 +12,7 @@ Webové admin rozhraní, týdenní rozvrhy, přeskočení zálivky podle počas�
 | MCU | ESP32-WROOM-32 (Dev Board) |
 | Relé modul | 8-kanál, Active HIGH, 5 V |
 | Ventily | 24 V AC solenoid (např. Hunter, Rain Bird) |
-| Napájení ESP32 + relé | 5 V / min. 1 A |
+| Napájení ESP32 + relé | 12 V DC (přes VIN) nebo 5 V (přes USB) |
 | Napájení ventilů | 24 V AC transformátor |
 
 ### Přiřazení GPIO → relé → zóna
@@ -36,14 +36,38 @@ Webové admin rozhraní, týdenní rozvrhy, přeskočení zálivky podle počas�
 
 ```
 ESP32 GPIO ──► Relay IN  (Active HIGH — logická 1 = relé sepnuto)
-Relay COM  ──► 24 V AC (fáze transformátoru)
+Relay COM  ──► 24 V AC (pól A transformátoru)
 Relay NO   ──► Solenoid ventil (cívka)
-Solenoid   ──► 24 V AC (nula transformátoru)
+Solenoid   ──► 24 V AC (pól B transformátoru — přímý výstup)
 
 Master ventil (Relay 7):
   sepne se PŘED spuštěním zóny (prodleva konfigurovatelná)
   rozepne se PO zastavení zóny (prodleva konfigurovatelná)
 ```
+
+---
+
+## Schéma rozvaděče
+
+Rozvaděč obsahuje dva nezávislé napájecí okruhy — 24 V AC pro ventily a 12 V DC pro ESP32.
+
+```
+230V AC přívod
+│
+├─ L (fáze) ─┬─► MCB1 6A ──► TRAFO 24V AC ──► pól A → svorkovnice → COM vstupy relé
+│            │                                         NO výstupy   → ventily (ven)
+│            │               TRAFO 24V AC → pól B ──────────────────────────→ ven (nula ventilů)
+│            │
+│            └─► MCB2 6A ──► ZDROJ 12V DC ──► VIN desky (ESP32 + relé)
+│
+└─ N (nula) ──► N můstek ──► obě trafa (primár)
+
+PE: nepoužito (SELV obvody — bezpečné napětí)
+```
+
+**Klíčový detail:** MCB1 větev (24 V AC) lze vypnout pro deaktivaci všech ventilů — ESP32 napájený z MCB2 větve zůstane spuštěný, zachová čas, WiFi a scheduler.
+
+Princip ventilu: `COM (24V AC pól A) → Relé NO → cívka ventilu → pól B (nula)` — při sepnutém relé protéká 24V AC cívkou a ventil se otevře.
 
 ---
 
@@ -243,6 +267,41 @@ Příklady:
   Po + St + Pá       = 0b0010101 = 21
   Víkend (So + Ne)   = 0b1100000 = 96
 ```
+
+---
+
+## Plánované funkce
+
+### Telegram Bot — vzdálené ovládání
+
+Ovládání závlahy z telefonu odkudkoliv bez port forwardingu nebo VPN.
+ESP32 každých 30 s sám dotazuje Telegram API na nové příkazy (polling) — funguje za jakýmkoliv routerem.
+
+**Jak to bude fungovat:**
+1. Vytvoříš bota přes @BotFather v Telegramu → dostaneš TOKEN
+2. TOKEN + tvoje Chat ID uložíš do `config.h`
+3. Z telefonu píšeš příkazy botovi jako zprávy
+
+**Plánované příkazy:**
+
+| Příkaz | Popis |
+|---|---|
+| `/help` | Seznam příkazů |
+| `/stav` | Co právě běží, počasí, příští zálivka |
+| `/start <zóna> <minuty>` | Spustit zónu (např. `/start 2 10`) |
+| `/stop` | Zastavit vše |
+| `/pauza <datum>` | Pauza do data (např. `/pauza 2026-07-10`) |
+| `/pauza off` | Zrušit pauzu |
+| `/pocasi` | Aktuální srážky a předpověď |
+
+**Automatické notifikace (ESP32 → telefon):**
+- ✅ Zálivka spuštěna / dokončena
+- ⚠️ Zálivka přeskočena kvůli dešti
+- ⚠️ Výpadek a obnovení WiFi
+
+**Nové soubory:** `telegram.h`, `telegram.cpp`  
+**Nové závislosti:** žádné — využívá `WiFiClientSecure` a `HTTPClient` (již součást ESP32 Arduino core)  
+**Bezpečnost:** ESP32 přijímá příkazy výhradně z nakonfigurovaného Chat ID
 
 ---
 
