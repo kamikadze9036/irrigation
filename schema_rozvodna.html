@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<title>Schéma rozvaděče — Zavlažovací systém</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    padding: 24px;
+  }
+  h1 {
+    text-align: center;
+    color: #fff;
+    font-size: 16px;
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 11px;
+    margin-bottom: 28px;
+  }
+
+  /* ── Wire colours ── */
+  .L  { color: #f5a623; }
+  .N  { color: #60a5fa; }
+  .ac { color: #f87171; }
+  .dc { color: #4ade80; }
+  .ac2{ color: #fb923c; }
+
+  /* ── Boxes ── */
+  .box {
+    border-radius: 5px;
+    padding: 8px 12px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .box-mcb  { background: #1a2f5a; border: 1.5px solid #4a90d9; }
+  .box-trafo{ background: #0f2a1a; border: 1.5px solid #4ade80; }
+  .box-esp  { background: #1e0f3a; border: 1.5px solid #a855f7; }
+  .box-relay{ background: #1e0f3a; border: 1.5px solid #7c3aed; }
+  .box-term { background: #1a1500; border: 1.5px solid #f5a623; }
+  .box-out  { background: #1a0a00; border: 1.5px solid #fb923c; }
+  .box-bus  { background: #0a1f3a; border: 1.5px solid #60a5fa; padding: 4px 10px; border-radius: 3px; }
+
+  .name  { font-weight: bold; font-size: 13px; }
+  .sub   { font-size: 10px; color: #888; }
+  .sub2  { font-size: 10px; }
+
+  /* ── Layout ── */
+  .diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* Row = horizontal flex */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+  .row.top    { align-items: flex-start; }
+  .row.bottom { align-items: flex-end; }
+
+  /* Connector wires — horizontal lines */
+  .wire {
+    flex: 1;
+    height: 2px;
+    min-width: 20px;
+  }
+  .wire.L  { background: #f5a623; }
+  .wire.N  { background: #60a5fa; }
+  .wire.ac { background: #f87171; }
+  .wire.dc { background: #4ade80; }
+  .wire.ac2{ background: #fb923c; }
+  .wire.gap{ background: transparent; }
+
+  /* Vertical spacer with optional wire */
+  .vwire {
+    width: 2px;
+    align-self: stretch;
+  }
+  .vwire.L  { background: #f5a623; }
+  .vwire.N  { background: #60a5fa; }
+  .vwire.ac { background: #f87171; }
+  .vwire.dc { background: #4ade80; }
+  .vwire.ac2{ background: #fb923c; }
+
+  /* Junction dot */
+  .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin: 0 -4px;
+    z-index: 2;
+    position: relative;
+  }
+  .dot.L  { background: #f5a623; }
+  .dot.N  { background: #60a5fa; }
+  .dot.ac { background: #f87171; }
+  .dot.dc { background: #4ade80; }
+
+  /* Label alongside wire */
+  .wlabel {
+    font-size: 10px;
+    padding: 0 6px;
+    white-space: nowrap;
+  }
+
+  /* ── Column layout for parallel branches ── */
+  .cols {
+    display: flex;
+    gap: 0;
+    align-items: stretch;
+  }
+  .col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* ── Section: whole panel border ── */
+  .panel {
+    border: 1.5px dashed #334155;
+    border-radius: 8px;
+    padding: 16px;
+    position: relative;
+    margin-bottom: 16px;
+  }
+  .panel-label {
+    position: absolute;
+    top: -10px; left: 16px;
+    background: #0d1117;
+    padding: 0 8px;
+    font-size: 11px;
+    color: #475569;
+    letter-spacing: 1px;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 20px;
+    padding: 12px 16px;
+    border: 1px solid #1e3a5f;
+    border-radius: 5px;
+    background: #0a1220;
+    max-width: 900px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .leg-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .leg-line {
+    width: 32px; height: 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* ── Relay grid ── */
+  .relay-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .relay-row {
+    font-size: 10px;
+    color: #a78bfa;
+    padding: 2px 4px;
+    background: #150a2a;
+    border-radius: 2px;
+    text-align: left;
+  }
+
+  /* Spacer */
+  .sp { flex-shrink: 0; }
+
+  /* Arrow tip at end of wire */
+  .arrow-r::after {
+    content: '';
+    display: inline-block;
+    width: 0; height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid currentColor;
+    vertical-align: middle;
+    margin-left: -1px;
+  }
+</style>
+</head>
+<body>
+
+<h1>SCHÉMA ROZVADĚČE — ZAVLAŽOVACÍ SYSTÉM</h1>
+<p class="subtitle">ESP32-WROOM + 8× relé Active HIGH &nbsp;|&nbsp; 24V AC ventily + 12V DC řídicí systém</p>
+
+<div class="diagram">
+<div class="panel">
+  <span class="panel-label">ROZVADĚČ</span>
+
+  <!-- ══ ROW 1: přívodní L → dva jističe ══ -->
+  <div style="display:flex; align-items:stretch; gap:0;">
+
+    <!-- Levý sloupec: L a N vstupy + N můstek -->
+    <div style="display:flex; flex-direction:column; align-items:flex-start; gap:0; width:130px; flex-shrink:0;">
+      <!-- L vstup -->
+      <div style="display:flex; align-items:center; height:50px;">
+        <div class="box" style="background:#1a1000; border:1.5px solid #f5a623; padding:4px 8px; font-size:11px;">
+          <span class="L name">L</span><br>
+          <span class="sub">fáze 230V</span>
+        </div>
+        <div class="wire L" style="width:40px;"></div>
+        <!-- Dot - rozbočka na MCB1 a MCB2 -->
+        <div class="dot L"></div>
+      </div>
+      <!-- N vstup -->
+      <div style="display:flex; align-items:center; height:50px;">
+        <div class="box box-bus" style="padding:4px 8px; font-size:11px;">
+          <span class="N name">N můstek</span>
+        </div>
+        <div class="wire N" style="width:22px;"></div>
+        <div class="dot N"></div>
+      </div>
+      <!-- PE -->
+      <div style="height:30px; display:flex; align-items:center; padding-left:4px;">
+        <span style="font-size:10px; color:#475569;">PE: nepoužito</span>
+      </div>
+    </div>
+
+    <!-- Střed: vertikální vedení L dolu na MCB2 + horizontální na MCB1 -->
+    <div style="display:flex; flex-direction:column; flex-shrink:0; width:20px; position:relative;">
+      <!-- Horní polovina: L jde vpravo na MCB1 -->
+      <div style="height:50px; display:flex; align-items:center;">
+        <div class="wire L" style="width:20px;"></div>
+      </div>
+      <!-- Svislá L čára dolů na MCB2 -->
+      <div style="height:50px; display:flex; align-items:center; position:relative;">
+        <div class="vwire L" style="height:100%; position:absolute; left:9px; top:0;"></div>
+        <div class="wire L" style="width:20px;"></div>
+      </div>
+      <div style="height:30px;"></div>
+    </div>
+
+    <!-- Pravá část: MCB1 nahoře, MCB2 dole, a za nimi trafa -->
+    <div style="display:flex; flex-direction:column; flex:1; gap:0;">
+
+      <!-- MCB1 + TRAFO 24V řada -->
+      <div style="display:flex; align-items:center; height:50px; gap:0;">
+        <div class="box box-mcb" style="width:70px;">
+          <span class="name" style="color:#4a90d9;">MCB1 6A</span><br>
+          <span class="sub">24V AC</span>
+        </div>
+        <div class="wire L" style="width:30px;"></div>
+        <div class="box box-trafo" style="width:110px;">
+          <span class="name dc">TRAFO 24V AC</span><br>
+          <span class="sub">230V → 24V AC</span>
+        </div>
+        <!-- Výstup pól A -->
+        <div class="wire ac" style="width:20px;"></div>
+        <div class="dot ac"></div>
+        <div class="wire ac" style="width:20px;"></div>
+        <div class="box box-term" style="width:80px;">
+          <span class="name ac">Svorkovnice</span><br>
+          <span class="sub2 ac">24V AC pól A</span><br>
+          <span class="sub">→ COM relé ×4</span>
+        </div>
+        <!-- Výstup pól B šipka dolů/ven -->
+        <div style="margin-left:12px; font-size:10px; color:#fb923c; white-space:nowrap;">
+          pól B →<br>přímo ven<br>(nula ventilů)
+        </div>
+      </div>
+
+      <!-- N vedení na TRAFO 24V (z N můstku) -->
+      <div style="display:flex; align-items:center; height:6px; gap:0; padding-left:70px;">
+        <div class="wire N" style="width:30px;"></div>
+        <div style="width:110px; display:flex; justify-content:center;">
+          <div class="vwire N" style="height:12px;"></div>
+        </div>
+      </div>
+
+      <!-- MCB2 + ZDROJ 12V řada -->
+      <div style="display:flex; align-items:center; height:50px; gap:0;">
+        <div class="box box-mcb" style="width:70px;">
+          <span class="name" style="color:#4a90d9;">MCB2 6A</span><br>
+          <span class="sub">12V DC</span>
+        </div>
+        <div class="wire L" style="width:30px;"></div>
+        <div class="box box-trafo" style="width:110px;">
+          <span class="name dc">ZDROJ 12V DC</span><br>
+          <span class="sub">230V → 12V DC</span>
+        </div>
+        <div class="wire dc" style="width:20px;"></div>
+        <div class="dot dc"></div>
+        <div class="wire dc" style="width:20px;"></div>
+        <div style="font-size:10px; color:#4ade80; white-space:nowrap;">
+          → VIN desky<br>(ESP32 + relé)
+        </div>
+      </div>
+
+      <!-- N vedení na ZDROJ 12V -->
+      <div style="display:flex; align-items:center; height:6px; gap:0; padding-left:70px;">
+        <div class="wire N" style="width:30px;"></div>
+        <div style="width:110px; display:flex; justify-content:center;">
+          <div class="vwire N" style="height:12px;"></div>
+        </div>
+      </div>
+      <div style="height:24px;"></div>
+
+    </div><!-- /pravá část -->
+  </div><!-- /ROW 1 -->
+
+  <!-- ══ ROW 2: ESP32 + Relé modul ══ -->
+  <div style="margin-top:16px; display:flex; gap:16px; align-items:flex-start;">
+
+    <!-- ESP32 box -->
+    <div class="box box-esp" style="flex:1; text-align:left; padding:12px;">
+      <div class="name" style="color:#e9d5ff; margin-bottom:6px; text-align:center;">ESP32-WROOM</div>
+      <div class="sub2" style="color:#a78bfa;">GPIO 13, 12, 14, 27, 26, 25, 33, 32</div>
+      <div class="sub2" style="color:#a78bfa;">WiFi STA / AP mód</div>
+      <div class="sub2" style="color:#a78bfa;">WebServer :80 (irrigation.local)</div>
+      <div class="sub2" style="color:#a78bfa;">Scheduler · NVS · mDNS · NTP</div>
+      <div style="margin-top:8px; font-size:10px; color:#7c3aed; border-top:1px solid #3b1a6b; padding-top:6px;">
+        Napájení: 12V DC → VIN &nbsp;|&nbsp; Běží na Core 1<br>
+        WebServer task → Core 0 (FreeRTOS)
+      </div>
+    </div>
+
+    <!-- Relé modul -->
+    <div class="box box-relay" style="flex:1.2; text-align:left; padding:12px;">
+      <div class="name" style="color:#c084fc; margin-bottom:6px; text-align:center;">8× RELÉ — Active HIGH</div>
+      <div class="relay-grid">
+        <div class="relay-row">Relé 1 (GPIO 13) → Zóna 1</div>
+        <div class="relay-row">Relé 2 (GPIO 12) → Zóna 2</div>
+        <div class="relay-row">Relé 3 (GPIO 14) → Zóna 3</div>
+        <div class="relay-row">Relé 4 (GPIO 27) → Zóna 4</div>
+        <div class="relay-row">Relé 5 (GPIO 26) → Zóna 5</div>
+        <div class="relay-row">Relé 6 (GPIO 25) → Zóna 6</div>
+        <div class="relay-row" style="color:#fbbf24;">Relé 7 (GPIO 33) → Master ventil</div>
+        <div class="relay-row" style="color:#475569;">Relé 8 (GPIO 32) → Rezerva</div>
+      </div>
+      <div style="margin-top:8px; font-size:10px; border-top:1px solid #3b1a6b; padding-top:6px;">
+        <span class="ac">COM</span> ← 24V AC pól A (ze svorkovnice)<br>
+        <span class="ac">NO</span>  → cívka ventilu → 24V AC pól B (ven)
+      </div>
+    </div>
+
+    <!-- Výstupy ven -->
+    <div style="display:flex; flex-direction:column; gap:6px; justify-content:center; padding-top:28px;">
+      <div class="box box-out" style="padding:6px 10px; text-align:left;">
+        <span class="ac2 name" style="font-size:11px;">→ Ventil Z1</span>
+      </div>
+      <div class="box box-out" style="padding:6px 10px; text-align:left;">
+        <span class="ac2 name" style="font-size:11px;">→ Ventil Z2</span>
+      </div>
+      <div class="box box-out" style="padding:6px 10px; text-align:left;">
+        <span class="ac2 name" style="font-size:11px;">→ Ventil Z3</span>
+      </div>
+      <div class="box box-out" style="padding:6px 10px; text-align:left;">
+        <span class="ac2 name" style="font-size:11px;">→ Ventil Z4–Z7</span>
+      </div>
+      <div class="box box-out" style="padding:6px 10px; text-align:left; border-color:#fb923c;">
+        <span style="color:#fb923c; font-size:10px;">pól B → nula ventilů</span>
+      </div>
+    </div>
+
+  </div><!-- /ROW 2 -->
+
+  <!-- Poznámka o vypínání -->
+  <div style="margin-top:14px; padding:8px 12px; background:#0a1220; border-left:3px solid #4ade80; border-radius:3px; font-size:11px;">
+    <span class="dc">⚡ Tip:</span> Vypínač do MCB1 větve (24V AC) → ventily bez napětí, ESP32 z MCB2 větve stále běží — zachován čas, WiFi, scheduler.
+  </div>
+
+</div><!-- /panel -->
+</div><!-- /diagram -->
+
+<!-- ══ LEGENDA ══ -->
+<div class="legend">
+  <div class="leg-item"><div class="leg-line" style="background:#f5a623;"></div><span class="L">L — fáze 230V AC</span></div>
+  <div class="leg-item"><div class="leg-line" style="background:#60a5fa;"></div><span class="N">N — nula 230V AC</span></div>
+  <div class="leg-item"><div class="leg-line" style="background:#f87171;"></div><span class="ac">24V AC — pól A (spínaný přes NO kontakt relé)</span></div>
+  <div class="leg-item"><div class="leg-line" style="background:#fb923c;"></div><span class="ac2">24V AC — pól B (přímý výstup, nula ventilů)</span></div>
+  <div class="leg-item"><div class="leg-line" style="background:#4ade80;"></div><span class="dc">12V DC — napájení ESP32 + relé desky</span></div>
+  <div class="leg-item" style="color:#475569; font-size:11px;">PE: nepoužito — SELV (bezpečné napětí &lt;50V AC)</div>
+</div>
+
+<!-- ══ PRINCIP VENTILU ══ -->
+<div style="max-width:900px; margin:16px auto 0; padding:12px 16px; background:#0a1220; border:1px solid #1e3a5f; border-radius:5px; font-size:11px; line-height:1.8;">
+  <span style="color:#fff; font-weight:bold;">Princip zapojení ventilu:</span><br>
+  <span class="ac">COM</span> (24V AC pól A) → Relé NO kontakt → Cívka ventilu → <span class="ac2">pól B</span> (nula)<br>
+  Relé sepnuto → prochází 24V AC → ventil <strong style="color:#4ade80;">OTEVŘEN</strong> &nbsp;|&nbsp;
+  Relé rozepnuto → obvod přerušen → ventil <strong style="color:#f87171;">ZAVŘEN</strong>
+</div>
+
+</body>
+</html>
