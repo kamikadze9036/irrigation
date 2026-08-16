@@ -24,30 +24,32 @@
 #include "webui.h"
 
 // ── Stav sítě ───────────────────────────────────────────────────
-static bool   wifiConnected          = false;  // připojeni k domácí WiFi (STA)
-static bool   apActive               = false;  // vlastní AP je aktivní
-static String wifiIP                 = "--";
-static bool   ntpSynced              = false;
-       bool   isWeatherRefreshNeeded = false;  // čteno z webui.cpp (extern)
+static bool wifiConnected = false;  // připojeni k domácí WiFi (STA)
+static bool apActive = false;       // vlastní AP je aktivní
+static String wifiIP = "--";
+static bool ntpSynced = false;
+bool isWeatherRefreshNeeded = false;  // čteno z webui.cpp (extern)
 
 // ── Časovače millis() ────────────────────────────────────────────
-static unsigned long lastSchedulerTick  = 0;   // každou minutu
-static unsigned long lastWeatherUpdate  = 0;   // každých WEATHER_UPDATE_MIN minut
-static unsigned long lastStatusPrint    = 0;   // každých 60 s do Serial
-static unsigned long lastWifiCheck      = 0;   // každých 30 s (STA) / 5 min (AP)
+static unsigned long lastSchedulerTick = 0;  // každou minutu
+static unsigned long lastWeatherUpdate = 0;  // každých WEATHER_UPDATE_MIN minut
+static unsigned long lastStatusPrint = 0;    // každých 60 s do Serial
+static unsigned long lastWifiCheck = 0;      // každých 30 s (STA) / 5 min (AP)
 
 // ── Extern API pro webui.cpp ─────────────────────────────────────
 String getSystemIP(void) {
   if (wifiConnected) return wifiIP;
-  if (apActive)      return "AP: 192.168.4.1";
+  if (apActive) return "AP: 192.168.4.1";
   return "Nepřipojeno";
 }
 String getWiFiSSID(void) {
   if (wifiConnected) return WiFi.SSID();
-  if (apActive)      return String("AP: ") + WIFI_AP_SSID;
+  if (apActive) return String("AP: ") + WIFI_AP_SSID;
   return "Nepřipojeno";
 }
-void triggerWeatherUpdate(void) { isWeatherRefreshNeeded = true; }
+void triggerWeatherUpdate(void) {
+  isWeatherRefreshNeeded = true;
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  NTP sync
@@ -82,15 +84,15 @@ static void syncNTP() {
 static void startAP() {
   WiFi.disconnect(true);
   delay(100);
-  WiFi.mode(WIFI_AP_STA);   // dual mode — AP + schopnost skenovat sítě
+  WiFi.mode(WIFI_AP_STA);  // dual mode — AP + schopnost skenovat sítě
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD);
-  apActive      = true;
+  apActive = true;
   wifiConnected = false;
-  wifiIP        = "192.168.4.1";
+  wifiIP = "192.168.4.1";
   Serial.println("[WiFi] ── AP mód spuštěn ──────────────────────────");
-  Serial.printf( "[WiFi]   SSID:  %s\n", WIFI_AP_SSID);
-  Serial.printf( "[WiFi]   Heslo: %s\n", WIFI_AP_PASSWORD);
+  Serial.printf("[WiFi]   SSID:  %s\n", WIFI_AP_SSID);
+  Serial.printf("[WiFi]   Heslo: %s\n", WIFI_AP_PASSWORD);
   Serial.println("[WiFi]   Admin: http://192.168.4.1");
   Serial.println("[WiFi]   (zkouším domácí WiFi každých 5 minut)");
   Serial.println("[WiFi] ─────────────────────────────────────────────");
@@ -117,7 +119,10 @@ static bool wifiConnectSTA() {
     return false;
   }
   Serial.printf("[WiFi] Připojuji k '%s'...\n", ssid);
-  WiFi.mode(WIFI_STA);
+  // WIFI_AP_STA místo WIFI_STA – pokud AP zrovna běží, tohle ho nesestřelí.
+  // Čistý WIFI_STA vypíná AP rozhraní, což při periodické kontrole (5 min)
+  // shazovalo AP klienty na 15 s = "zamrzání" v AP módu.
+  WiFi.mode(WIFI_AP_STA);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.begin(ssid, pass);
@@ -130,9 +135,11 @@ static bool wifiConnectSTA() {
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    wifiIP        = WiFi.localIP().toString();
+    wifiIP = WiFi.localIP().toString();
     wifiConnected = true;
-    apActive      = false;
+    apActive = false;
+    WiFi.softAPdisconnect(true);   // domácí WiFi funguje – AP už není potřeba
+    WiFi.mode(WIFI_STA);           // čistý STA mód po úspěšném přepnutí
     Serial.printf("[WiFi] ✓ Připojeno! IP: %s\n", wifiIP.c_str());
     Serial.printf("[WiFi]   Admin: http://%s.local  nebo  http://%s\n",
                   WIFI_HOSTNAME, wifiIP.c_str());
@@ -197,15 +204,19 @@ void setup() {
 
   // WebServer běží na core 0 — odděleno od hlavní smyčky (core 1)
   xTaskCreatePinnedToCore(
-    [](void*){ for(;;){ WebUI_Handle(); vTaskDelay(1 / portTICK_PERIOD_MS); } },
-    "WebServer", 8192, nullptr, 1, nullptr, 0
-  );
+    [](void *) {
+      for (;;) {
+        WebUI_Handle();
+        vTaskDelay(1 / portTICK_PERIOD_MS);
+      }
+    },
+    "WebServer", 8192, nullptr, 1, nullptr, 0);
   Serial.println("[INIT] WebServer task spuštěn na core 0");
 
   // První weather update (odloženo — čekáme na síť)
-  lastWeatherUpdate  = millis() - (unsigned long)(WEATHER_UPDATE_MIN - 1) * 60000UL;
-  lastSchedulerTick  = millis();
-  lastWifiCheck      = millis();
+  lastWeatherUpdate = millis() - (unsigned long)(WEATHER_UPDATE_MIN - 1) * 60000UL;
+  lastSchedulerTick = millis();
+  lastWifiCheck = millis();
 
   Serial.println("[INIT] ✓ Inicializace dokončena — vstupuji do smyčky");
   Serial.println();
@@ -276,7 +287,7 @@ void loop() {
     Serial.println("[LOOP] Aktualizuji data počasí...");
     WeatherSettings ws = Storage_GetWeather();
     Weather_Update(ws.latitude, ws.longitude);
-    lastWeatherUpdate      = now;
+    lastWeatherUpdate = now;
     isWeatherRefreshNeeded = false;
   } else if (isWeatherRefreshNeeded && apActive) {
     isWeatherRefreshNeeded = false;  // nelze — nejsme online
@@ -294,25 +305,25 @@ void loop() {
     lastStatusPrint = now;
     struct tm ti;
     bool anyRunning = Zones_AnyRunning();
-    int  runCount   = Zones_RunningCount();
+    int runCount = Zones_RunningCount();
 
     String stavStr = anyRunning
-      ? (String(runCount) + " zón" + (runCount == 1 ? "a" : "y") + " běží")
-      : "Klidový stav";
+                       ? (String(runCount) + " zón" + (runCount == 1 ? "a" : "y") + " běží")
+                       : "Klidový stav";
 
     if (getLocalTime(&ti)) {
       char buf[20];
       strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", &ti);
       Serial.printf("[STATUS] %s | %s:%s | %s\n",
-        buf,
-        apActive ? "AP" : "WiFi",
-        wifiConnected || apActive ? wifiIP.c_str() : "off",
-        stavStr.c_str());
+                    buf,
+                    apActive ? "AP" : "WiFi",
+                    wifiConnected || apActive ? wifiIP.c_str() : "off",
+                    stavStr.c_str());
     } else {
       Serial.printf("[STATUS] Čas nesync | %s:%s | %s\n",
-        apActive ? "AP" : "WiFi",
-        wifiConnected || apActive ? wifiIP.c_str() : "off",
-        stavStr.c_str());
+                    apActive ? "AP" : "WiFi",
+                    wifiConnected || apActive ? wifiIP.c_str() : "off",
+                    stavStr.c_str());
     }
     if (Queue_Count() > 0)
       Serial.printf("[STATUS] Fronta: %d zón čeká\n", Queue_Count());
