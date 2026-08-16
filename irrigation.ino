@@ -64,6 +64,7 @@ static void syncNTP() {
   int retries = 0;
   while (!getLocalTime(&ti, 1000) && retries++ < 20) {
     delay(300);
+    Zones_Tick();  // nesmí se zastavit hlídání timeoutu zóny během NTP sync (až ~26 s)
     Serial.print(".");
   }
   Serial.println();
@@ -82,6 +83,16 @@ static void syncNTP() {
 //  WiFi AP — záložní přístupový bod
 // ═══════════════════════════════════════════════════════════════
 static void startAP() {
+  // Idempotence: pokud AP už běží, nesmí se znovu volat WiFi.softAP() —
+  // to by AP rozhraní překonfigurovalo a odpojilo všechny připojené klienty.
+  // Stačí jen shodit STA připojení, AP zůstane nedotčené.
+  if (apActive) {
+    WiFi.disconnect(true);
+    wifiConnected = false;
+    Serial.println("[WiFi] AP již běží — jen ukončuji neúspěšný STA pokus");
+    return;
+  }
+
   WiFi.disconnect(true);
   delay(100);
   WiFi.mode(WIFI_AP_STA);  // dual mode — AP + schopnost skenovat sítě
@@ -130,6 +141,7 @@ static bool wifiConnectSTA() {
   int tries = 0;
   while (WiFi.status() != WL_CONNECTED && tries++ < 30) {  // max 15 s
     delay(500);
+    Zones_Tick();  // nesmí se zastavit hlídání timeoutu zóny na 15 s
     Serial.print(".");
   }
   Serial.println();
