@@ -104,7 +104,7 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
 
 <!-- ── STATUS ŘÁDEK ───────────────────────────────────────────── -->
 <div id="sysbar" style="background:#0a1628;border-bottom:1px solid #0f3460;padding:4px 16px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#667">
-  <span>&#128246; <span id="sb-wifi">--</span></span>
+  <span>&#128246; <span id="sb-wifi">--</span> <span id="sb-rssi" style="color:#aaa;font-size:11px"></span></span>
   <span>&#127760; <span id="sb-ip">--</span></span>
   <span>&#128336; <span id="sb-time2">--:--</span></span>
 </div>
@@ -398,6 +398,7 @@ async function refreshDashboard() {
 
   // Status řádek
   if(d.wifi) document.getElementById('sb-wifi').textContent = d.wifi;
+  document.getElementById('sb-rssi').textContent = d.rssi ? '(' + d.rssi + ' dBm)' : '';
   if(d.ip)   document.getElementById('sb-ip').textContent   = d.ip;
   if(d.time) document.getElementById('sb-time2').textContent = d.time;
 
@@ -750,7 +751,7 @@ async function loadWiFi() {
   const d = await api('/api/wifi');
   const el = document.getElementById('wifi-current');
   if(d.connected) {
-    el.innerHTML = '&#10003; Připojeno: <strong>' + d.currentSSID + '</strong>';
+    el.innerHTML = '&#10003; Připojeno: <strong>' + d.currentSSID + '</strong> <span style="color:#aaa;font-size:11px">(' + d.rssi + ' dBm)</span>';
   } else {
     el.innerHTML = '&#9888; Není připojeno k domácí WiFi (AP mód)';
   }
@@ -938,6 +939,7 @@ static void handleStatus() {
   doc["tempC"]         = wd.currentTempC;
   doc["ip"]            = getSystemIP();
   doc["wifi"]          = getWiFiSSID();
+  doc["rssi"]          = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
 
   // Běžící zóny (může jich být více při paralelním módu)
   JsonArray running = doc["runningZones"].to<JsonArray>();
@@ -1292,6 +1294,7 @@ static void handleGetWiFi() {
   doc["savedSSID"]   = creds.ssid;
   doc["connected"]   = (WiFi.status() == WL_CONNECTED);
   doc["currentSSID"] = WiFi.SSID();
+  doc["rssi"]        = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   String out; serializeJson(doc, out);
   sendJson(out);
 }

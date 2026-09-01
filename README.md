@@ -137,16 +137,18 @@ Start
 
 ### Zapojení programátoru (ESP32 s USB-C jako flasher)
 
-Na flashovacím ESP32 je **GPIO0 spojen s GND** — tím se jeho vlastní čip deaktivuje a USB-UART čip (CP2102/CH340) funguje jako průchodový most.
+Na flashovacím ESP32 je **EN spojen s GND** — tím se jeho vlastní čip drží v resetu (neběží, nepřebíjí TX/RX linku) a USB-UART čip (CP2102/CH340) funguje jako čistý průchodový most.
 
 ```
 Flashovací ESP32             Hlavní ESP32 (irrigation)
-(GPIO0 → GND)
+(EN → GND)
 
-  TX  ──────────────────────►  RX  (GPIO3)
-  RX  ◄──────────────────────  TX  (GPIO1)
+  TX0 ──────────────────────►  RX0  (GPIO3)
+  RX0 ◄──────────────────────  TX0  (GPIO1)
   GND ────────────────────────  GND
 ```
+
+> Použij TX0/RX0 (UART0) — bootloader/esptool poslouchá jen na UART0. Piny RX2/TX2 (UART2) na flashování nefungují.
 
 > Hlavní ESP32 potřebuje **vlastní napájení** (5 V / min. 1 A) — přes 3 dráty napájení nejde.
 
