@@ -150,15 +150,19 @@ Flashovací ESP32             Hlavní ESP32 (irrigation)
 
 > Použij TX0/RX0 (UART0) — bootloader/esptool poslouchá jen na UART0. Piny RX2/TX2 (UART2) na flashování nefungují.
 
-> Hlavní ESP32 potřebuje **vlastní napájení** (5 V / min. 1 A) — přes 3 dráty napájení nejde.
+> **Pozor, TX0/RX0 nemusí být vždy kříženě.** Na některých klonech desek jsou popisky TX/RX na desce už z pohledu USB-UART čipu (ne ESP32 čipu), takže **rovné** spojení (TX→TX, RX→RX) je pak elektricky správně. Když kříženě nefunguje ("No serial data received"), zkus to rovně.
+
+> Napájení hlavní desky přes VIN **není nutně potřeba** — v praxi stačilo i jen **TX0/RX0/GND** (žádný VIN drát), pokud má hlavní ESP32 dost energie z toho, co je zrovna zapojené (např. zbytkové USB napájení, kondenzátory). Pokud by to nefungovalo, přidej **VIN (5V)** propojení z flashovacího ESP32, nebo napájej hlavní desku zvlášť — v tom případě musí být **GND obou desek propojená** (jinak esptool nedostane žádnou odpověď).
 
 ### Postup nahrání firmware
 
-1. Připoj flashovací ESP32 přes USB-C k PC
-2. Na hlavním ESP32: drž tlačítko **BOOT**
-3. Zmáčkni a pusť **EN/RST**
-4. Pusť **BOOT** — ESP32 je teď v boot módu
-5. V Arduino IDE vyber správný port a klikni **Upload**
+1. Připoj flashovací ESP32 přes USB-C k PC, v Arduino IDE vyber správný port
+2. Klikni **Upload**
+3. Jakmile se v konzoli objeví `Connecting....`, na **hlavním ESP32**: drž **BOOT**
+4. Zatímco držíš BOOT, krátce zmáčkni a pusť **EN/RST**
+5. Chvíli ještě drž BOOT, pak ho pusť — upload by měl naskočit (`Chip is ESP32-D0WDQ6...`)
+
+> Pokud selže s `Failed to connect... No serial data received`, zkus to znovu — timing BOOT/EN je citlivý na pár desetin sekundy. Zkontroluj taky GND (viz výše) a TX/RX orientaci.
 
 ### Potřebné knihovny (Arduino Library Manager)
 - **ArduinoJson** — Benoit Blanchon
