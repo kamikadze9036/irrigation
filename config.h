@@ -40,4 +40,14 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 // ── Log (in-memory kruhový buffer) ──────────────────────────────
 #define LOG_MAX_ENTRIES  40
 
+// ── Vzdálený přístup přes cloud (volitelné) ──────────────────────
+// Umožňuje ovládat systém odkudkoli přes malou relay appku (Vercel + Redis) —
+// viz /cloud v repozitáři. ESP32 sám periodicky "pollne" appku, jestli na něj
+// čeká nějaký příkaz (žádný port forwarding, žádné otevřené porty doma).
+// Necháš-li CLOUD_BASE_URL prázdné, tahle funkce se úplně vypne.
+#define CLOUD_ENABLED           true
+#define CLOUD_BASE_URL          ""     // např. "https://tvoje-appka.vercel.app" (bez lomítka na konci)
+#define CLOUD_DEVICE_TOKEN      ""     // musí být identické s DEVICE_TOKEN nastaveným na Vercelu
+#define CLOUD_POLL_INTERVAL_MS  4000
+
 #define FW_VERSION  "1.0.0"

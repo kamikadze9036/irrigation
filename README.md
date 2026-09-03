@@ -209,6 +209,12 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 #define WEATHER_UPDATE_MIN    60   // interval aktualizace počasí (minuty)
 #define MAX_PROGRAMS_PER_ZONE  3   // programy na zónu
 #define LOG_MAX_ENTRIES       40   // velikost in-memory logu
+
+// Vzdálený přístup přes cloud (volitelné, viz sekce "Vzdálený přístup" níže)
+#define CLOUD_ENABLED           true
+#define CLOUD_BASE_URL          ""   // prázdné = vypnuto; jinak "https://tvuj-projekt.vercel.app"
+#define CLOUD_DEVICE_TOKEN      ""   // musí sedět s DEVICE_TOKEN nastaveným na Vercelu
+#define CLOUD_POLL_INTERVAL_MS  4000
 ```
 
 ---
@@ -223,7 +229,9 @@ irrigation/
 ├── scheduler.h/.cpp  – Týdenní rozvrhy, Scheduler_Tick() volaný každou minutu
 ├── weather.h/.cpp    – Open-Meteo API přes HTTPClient (zvládá chunked encoding)
 ├── webui.h/.cpp      – WebServer na portu 80, REST API + celé HTML admin rozhraní
-└── irrigation.ino    – setup(), loop(), WiFi STA/AP logika, NTP, mDNS, millis() časovače
+├── cloud_sync.h/.cpp – Vzdálený přístup: polling tunel na cloud relay appku (viz níže)
+├── irrigation.ino    – setup(), loop(), WiFi STA/AP logika, NTP, mDNS, millis() časovače
+└── cloud/            – Next.js appka pro Vercel (relay pro vzdálený přístup) — cloud/README.md
 ```
 
 ---
@@ -276,38 +284,30 @@ Příklady:
 
 ---
 
-## Plánované funkce
+## Vzdálený přístup (cloud relay)
 
-### Telegram Bot — vzdálené ovládání
+Ovládání zálivky odkudkoliv (ne jen z domácí WiFi) — bez port forwardingu a bez VPN.
+Místo Telegram bota (zvažováno dřív) appka jede jako malá appka na Vercelu, která
+servíruje **totožné webové rozhraní** jako lokální `http://irrigation.local` — plný
+přístup k rozvrhům, ne jen pár příkazů.
 
-Ovládání závlahy z telefonu odkudkoliv bez port forwardingu nebo VPN.
-ESP32 každých 30 s sám dotazuje Telegram API na nové příkazy (polling) — funguje za jakýmkoliv routerem.
+**Princip:** appka na Vercelu nemá jak se sama připojit k ESP32 (žádná veřejná IP,
+žádný otevřený port), takže je to naopak — ESP32 appku sám pravidelně "pollne"
+(`CLOUD_POLL_INTERVAL_MS`, výchozí 4 s), jestli tam čeká nějaký požadavek od
+přihlášeného uživatele, přehraje ho sám na sobě přes svoje lokální REST API výše,
+a výsledek pošle zpátky. Appka na Vercelu tak nemá vlastní kopii žádné logiky
+ani dat — je to čistě tunel chráněný device tokenem.
 
-**Jak to bude fungovat:**
-1. Vytvoříš bota přes @BotFather v Telegramu → dostaneš TOKEN
-2. TOKEN + tvoje Chat ID uložíš do `config.h`
-3. Z telefonu píšeš příkazy botovi jako zprávy
+**Nastavení:** `cloud/README.md` — založení Vercel účtu, Redis (Upstash) přes
+Vercel Marketplace, proměnné prostředí, a hodnoty do `CLOUD_BASE_URL` /
+`CLOUD_DEVICE_TOKEN` v `config.h`.
 
-**Plánované příkazy:**
-
-| Příkaz | Popis |
-|---|---|
-| `/help` | Seznam příkazů |
-| `/stav` | Co právě běží, počasí, příští zálivka |
-| `/start <zóna> <minuty>` | Spustit zónu (např. `/start 2 10`) |
-| `/stop` | Zastavit vše |
-| `/pauza <datum>` | Pauza do data (např. `/pauza 2026-07-10`) |
-| `/pauza off` | Zrušit pauzu |
-| `/pocasi` | Aktuální srážky a předpověď |
-
-**Automatické notifikace (ESP32 → telefon):**
-- ✅ Zálivka spuštěna / dokončena
-- ⚠️ Zálivka přeskočena kvůli dešti
-- ⚠️ Výpadek a obnovení WiFi
-
-**Nové soubory:** `telegram.h`, `telegram.cpp`  
-**Nové závislosti:** žádné — využívá `WiFiClientSecure` a `HTTPClient` (již součást ESP32 Arduino core)  
-**Bezpečnost:** ESP32 přijímá příkazy výhradně z nakonfigurovaného Chat ID
+**Nové soubory:** `cloud_sync.h/.cpp` (ESP32), `cloud/` (Next.js appka pro Vercel)
+**Nové závislosti na ESP32:** žádné — `WiFiClientSecure` + `HTTPClient` jsou už
+součást ESP32 Arduino core (stejně jako `weather.cpp`)
+**Bezpečnost:** appka je chráněná heslem (session cookie), ESP32 appce heslo nezná
+— prokazuje se samostatným `DEVICE_TOKEN`; appka sama neukládá žádnou konfiguraci
+zálivky, jen krátkodobou frontu požadavků
 
 ---
 

@@ -22,6 +22,7 @@
 #include "scheduler.h"
 #include "weather.h"
 #include "webui.h"
+#include "cloud_sync.h"
 
 // ── Stav sítě ───────────────────────────────────────────────────
 static bool wifiConnected = false;  // připojeni k domácí WiFi (STA)
@@ -224,6 +225,19 @@ void setup() {
     },
     "WebServer", 8192, nullptr, 1, nullptr, 0);
   Serial.println("[INIT] WebServer task spuštěn na core 0");
+
+  // Cloud sync — vzdálený přístup (volitelný, viz config.h). Vlastní task,
+  // protože dělá blokující HTTPS požadavky (nesmí zdržovat hlavní smyčku/zóny).
+  CloudSync_Init();
+  xTaskCreatePinnedToCore(
+    [](void *) {
+      for (;;) {
+        CloudSync_Tick();
+        vTaskDelay(1 / portTICK_PERIOD_MS);
+      }
+    },
+    "CloudSync", 12288, nullptr, 1, nullptr, 0);
+  Serial.println("[INIT] CloudSync task spuštěn na core 0");
 
   // První weather update (odloženo — čekáme na síť)
   lastWeatherUpdate = millis() - (unsigned long)(WEATHER_UPDATE_MIN - 1) * 60000UL;
