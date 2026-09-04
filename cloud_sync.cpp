@@ -22,6 +22,16 @@ static bool cloudConfigured(void) {
   return CLOUD_ENABLED && strlen(CLOUD_BASE_URL) > 0 && strlen(CLOUD_DEVICE_TOKEN) > 0;
 }
 
+// Čas posledního úspěšného pollu appky (millis()) — pro lokální indikátor v dashboardu
+static unsigned long lastOkMs = 0;
+
+bool CloudSync_IsConfigured(void) { return cloudConfigured(); }
+
+bool CloudSync_IsOnline(void) {
+  if (!cloudConfigured() || lastOkMs == 0) return false;
+  return (millis() - lastOkMs) < 3 * (unsigned long)CLOUD_POLL_INTERVAL_MS;
+}
+
 void CloudSync_Init(void) {
   if (!cloudConfigured()) {
     Serial.println("[CLOUD] CLOUD_BASE_URL/CLOUD_DEVICE_TOKEN nenastaveny — vzdálený přístup vypnut");
@@ -75,6 +85,7 @@ void CloudSync_Tick(void) {
   }
   String pollBody = poll.getString();
   poll.end();
+  lastOkMs = millis();  // appka odpověděla — spojení funguje, bez ohledu na to, jestli něco čekalo
 
   JsonDocument doc;
   if (deserializeJson(doc, pollBody) != DeserializationError::Ok) {

@@ -8,6 +8,7 @@
 #include "weather.h"
 #include "zones.h"
 #include "config.h"
+#include "cloud_sync.h"
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -107,6 +108,7 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
   <span>&#128246; <span id="sb-wifi">--</span> <span id="sb-rssi" style="color:#aaa;font-size:11px"></span></span>
   <span>&#127760; <span id="sb-ip">--</span></span>
   <span>&#128336; <span id="sb-time2">--:--</span></span>
+  <span>&#9729; Cloud: <span id="sb-cloud">--</span></span>
 </div>
 
 <!-- ── DASHBOARD ──────────────────────────────────────────────── -->
@@ -401,6 +403,11 @@ async function refreshDashboard() {
   document.getElementById('sb-rssi').textContent = d.rssi ? '(' + d.rssi + ' dBm)' : '';
   if(d.ip)   document.getElementById('sb-ip').textContent   = d.ip;
   if(d.time) document.getElementById('sb-time2').textContent = d.time;
+
+  const cloudEl = document.getElementById('sb-cloud');
+  if(!d.cloudConfigured) { cloudEl.textContent = 'nenastaveno'; cloudEl.style.color = '#888'; }
+  else if(d.cloudOnline) { cloudEl.textContent = 'připojeno';   cloudEl.style.color = '#00d4aa'; }
+  else                   { cloudEl.textContent = 'nedostupné';  cloudEl.style.color = '#e74c3c'; }
 
   document.getElementById('st-date').textContent = d.date || '--';
   document.getElementById('st-time').textContent = d.time || '--:--';
@@ -940,6 +947,8 @@ static void handleStatus() {
   doc["ip"]            = getSystemIP();
   doc["wifi"]          = getWiFiSSID();
   doc["rssi"]          = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  doc["cloudConfigured"] = CloudSync_IsConfigured();
+  doc["cloudOnline"]     = CloudSync_IsOnline();
 
   // Běžící zóny (může jich být více při paralelním módu)
   JsonArray running = doc["runningZones"].to<JsonArray>();
