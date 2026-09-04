@@ -302,6 +302,11 @@ ani dat — je to čistě tunel chráněný device tokenem.
 Vercel Marketplace, proměnné prostředí, a hodnoty do `CLOUD_BASE_URL` /
 `CLOUD_DEVICE_TOKEN` v `config.h`.
 
+**Stav připojení se dá zkontrolovat ze dvou stran:**
+- appka na Vercelu ukazuje "Zařízení: online/offline" (podle toho, kdy ESP32 naposledy pollnulo)
+- lokální dashboard (`http://irrigation.local`) ukazuje vedle WiFi ikonky "Cloud: připojeno/nedostupné/nenastaveno"
+  (podle toho, kdy naposledy uspěl poll appky) — vidíš tak i doma v síti, aniž bys appku sám otevíral
+
 **Nové soubory:** `cloud_sync.h/.cpp` (ESP32), `cloud/` (Next.js appka pro Vercel)
 **Nové závislosti na ESP32:** žádné — `WiFiClientSecure` + `HTTPClient` jsou už
 součást ESP32 Arduino core (stejně jako `weather.cpp`)
