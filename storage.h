@@ -4,6 +4,11 @@
 #include "config.h"
 
 // ── Datové struktury ────────────────────────────────────────────
+// Ukládají se do NVS (Preferences) jako raw bytes. Při čtení se záznam přijme
+// jen pokud má stejnou délku jako aktuální struktura — po změně layoutu v nové
+// verzi firmware se tak použijí výchozí hodnoty místo smetí. Když do struktury
+// přidáváš pole, počítej s tím, že uživatel po flashi přijde o uložené nastavení
+// dané struktury (zóny / počasí / systém / WiFi).
 
 struct ZoneProgram {
   bool     enabled;

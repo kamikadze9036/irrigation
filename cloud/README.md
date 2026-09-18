@@ -23,6 +23,30 @@ prohlížeč  →  Vercel appka (fronta v Redisu)  ←  ESP32 (pollne každých 
 4. ESP32 požadavek vyzvedne (první klik do ~13 s, další už do ~4 s), provede ho sám na sobě a pošle výsledek zpět.
 5. Appka výsledek vrátí prohlížeči — vypadá to jako běžný fetch.
 
+## Struktura
+
+```
+cloud/
+├── middleware.ts                 – session cookie kontrola; bez ní 401 (API) / redirect na /login
+├── app/route.ts                  – GET /  → servíruje dashboard (lib/dashboard.template.html)
+├── app/login/page.tsx            – přihlašovací formulář
+├── app/api/login/route.ts        – POST {password} → session cookie (rate limit 10/15 min z IP)
+├── app/api/logout/route.ts       – POST → smaže cookie
+├── app/api/proxy/route.ts        – POST {path,method,body} → zafrontuje pro ESP32, čeká na odpověď (max 25 s)
+├── app/api/device/poll/route.ts  – GET (X-Device-Token) → ESP32 si vyzvedne čekající požadavek
+├── app/api/device/response/route.ts – POST (X-Device-Token) → ESP32 vrátí výsledek
+├── app/api/device/status/route.ts   – GET → {online, lastSeen} pro indikátor v dashboardu
+├── lib/auth.ts                   – HMAC session tokeny + safeEqual (konstantní čas)
+├── lib/deviceAuth.ts             – ověření X-Device-Token
+├── lib/redis.ts                  – Upstash Redis klient (KV_REST_API_URL/TOKEN)
+├── lib/dashboardHtml.ts          – načte šablonu a doplní window.CLOUD_MODE
+└── lib/dashboard.template.html   – GENEROVANÉ z ../webui.cpp (tools/sync_cloud_template.sh)
+```
+
+**Klíče v Redisu:** `queue` (seznam ID čekajících požadavků), `req:<id>` a
+`res:<id>` (obsah požadavku / odpovědi, TTL 60 s), `lastSeen` (čas posledního
+pollu ESP32), `login:fail:<ip>` (počítadlo neúspěšných přihlášení, TTL 15 min).
+
 ## Nasazení (poprvé)
 
 1. **Vercel účet** — jdi na [vercel.com](https://vercel.com), přihlas se přes

@@ -41,8 +41,10 @@ Relay NO   ──► Solenoid ventil (cívka)
 Solenoid   ──► 24 V AC (pól B transformátoru — přímý výstup)
 
 Master ventil (Relay 7):
-  sepne se PŘED spuštěním zóny (prodleva konfigurovatelná)
-  rozepne se PO zastavení zóny (prodleva konfigurovatelná)
+  sepne se PŘED spuštěním zóny (prodleva konfigurovatelná, výchozí 2 s)
+  rozepne se PO zastavení poslední zóny (prodleva konfigurovatelná, výchozí 3 s)
+  při přepnutí zóny, paralelním běhu i sekvenci zůstává otevřený (čerpadlo se necykluje)
+  prodlevy jsou neblokující — řeší je stavový automat v Zones_Tick()
 ```
 
 ---
@@ -175,6 +177,26 @@ Flashovací ESP32             Hlavní ESP32 (irrigation)
 | Upload Speed | `115200` nebo `460800` |
 | Serial Monitor | `115200 baud` |
 
+### Kompilace z příkazové řádky (arduino-cli)
+
+```
+arduino-cli compile --fqbn esp32:esp32:esp32 .
+arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/cu.usbserial-XXXX .
+```
+
+Arduino IDE 2 má `arduino-cli` zabalené uvnitř aplikace
+(`/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli`),
+takže není nutné instalovat zvlášť.
+
+> **Apple Silicon:** nástroj `ctags`, který Arduino používá pro generování prototypů,
+> je jen x86_64 binárka. Bez Rosetty kompilace skončí chybou
+> `bad CPU type in executable`. Buď nainstaluj Rosettu (`softwareupdate --install-rosetta`),
+> nebo použij oddělenou datovou složku arduino-cli, kde je místo `ctags` prázdný skript
+> (`exit 0`) — sketch má všechny funkce definované před použitím, prototypy nepotřebuje.
+
+Firmware zabírá ~91 % výchozího app oddílu (1,3 MB). Pokud se přestane vejít,
+nastav v Arduino IDE *Tools → Partition Scheme → Huge APP (3MB No OTA)*.
+
 ### Postup
 
 1. Otevři složku `irrigation/` v Arduino IDE — `.ino` se načte automaticky se všemi `.cpp`/`.h` soubory
@@ -216,8 +238,14 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 #define CLOUD_DEVICE_TOKEN      ""   // musí sedět s DEVICE_TOKEN nastaveným na Vercelu
 #define CLOUD_POLL_INTERVAL_MS  4000     // rychlý poll chvíli po posledním požadavku
 #define CLOUD_POLL_IDLE_MS      12000    // klidový poll (šetří Vercel/Redis limity)
+#define CLOUD_ACTIVE_WINDOW_MS  180000   // po požadavku 3 min rychlý poll, pak zpět na klidový
 #define CLOUD_TLS_VERIFY        true     // ověřovat certifikát appky (cloud_ca.h)
+
+#define FW_VERSION  "1.3.0"
 ```
+
+> `config.h` obsahuje tajemství (WiFi heslo, `CLOUD_DEVICE_TOKEN`). V gitu je verze
+> s prázdnými hodnotami — reálné hodnoty vyplň jen lokálně a do commitu je nedávej.
 
 ---
 
@@ -237,6 +265,35 @@ irrigation/
 ├── irrigation.ino    – setup(), loop(), WiFi STA/AP logika, NTP, mDNS, millis() časovače
 └── cloud/            – Next.js appka pro Vercel (relay pro vzdálený přístup) — cloud/README.md
 ```
+
+---
+
+## Architektura za běhu (tasky, jádra, zámky)
+
+```
+Core 1 — loop()                          Core 0 — FreeRTOS tasky
+──────────────────────────────           ─────────────────────────────────────
+Zones_Tick()      každých ~10 ms         WebServer  (8 kB stack)  server.handleClient()
+WiFi kontrola     30 s STA / 5 min AP    CloudSync (16 kB stack)  poll → replay → response
+Scheduler_Tick()  každých 15 s
+Weather_Update()  každých 60 min (blokuje až 12 s)
+NTP resync        každých 24 h  (blokuje až 26 s)
+```
+
+- **Zones_Tick()** je srdce systému: sepíná relé po pre-delay master ventilu, hlídá
+  vypršení zón, posouvá frontu, zavírá master po post-delay a krokuje test relé.
+  Volá se i uvnitř blokujících smyček (připojování WiFi, NTP), takže zóna nikdy
+  nepřeteče čas jen proto, že se smyčka zdržela.
+- **Scheduler_Tick()** porovnává naplánovaný start každého programu s aktuálním
+  časem v okně 5 minut (`SCHED_CATCHUP_S`). Každý start (unix čas) zpracuje právě
+  jednou — spustí, zařadí do fronty, nebo zapíše do logu důvod přeskočení.
+- **Zámky:** tři rekurzivní/obyčejné mutexy — `storage.cpp` (NVS), `zones.cpp`
+  (stav zón, fronta, log), `weather.cpp` (data počasí). Pořadí zamykání je vždy
+  zóny → storage, nikdy naopak. Žádná funkce pod zámkem neblokuje (`delay()`).
+- **HTTP handlery nikdy neblokují** — `/api/run`, `/api/test` i `/api/stop` vrátí
+  odpověď okamžitě; průběh se sleduje přes `/api/status`.
+- **Přetečení `millis()`** (po ~49,7 dnech) je ošetřené porovnáním
+  `(long)(now - t) >= 0` — zóna běžící přes okamžik přetečení skončí správně.
 
 ---
 
@@ -264,6 +321,42 @@ irrigation/
 | POST | `/api/wifi` | `{"ssid":"...","password":"...","restart":true}` — uložit credentials |
 | GET | `/api/wifi/scan` | Async scan sítí — volat opakovaně dokud `scanning=false` |
 | POST | `/api/time` | `{"epoch":1234567890}` — ruční nastavení času (RAM, do restartu) |
+
+### Odpověď `/api/status`
+
+```json
+{
+  "date": "18.09.2026", "time": "21:40",
+  "nextRun": "Okruh 2 — Pá 06:00 (20 min)",
+  "running": true, "runningCount": 1, "queueCount": 2, "testRunning": false,
+  "weatherSkip": false, "weatherStatus": "OK: 0.4 mm (24h), předpověď 1.2 mm, 18.3°C",
+  "rain24h": 0.4, "tempC": 18.3,
+  "ip": "192.168.1.42", "wifi": "MojeWiFi", "rssi": -61,
+  "cloudConfigured": true, "cloudOnline": true,
+  "runningZones": [
+    {"zone": 1, "name": "Okruh 1", "duration": 20, "elapsed": 3, "waiting": false}
+  ],
+  "zones": [ {"id": 1, "name": "Okruh 1", "enabled": true, "running": true}, "…" ]
+}
+```
+
+- `waiting: true` = zóna je spuštěná, ale relé ještě čeká na pre-delay master ventilu
+- `testRunning` = probíhá test relé (UI podle toho ukazuje průběh)
+- `cloudOnline` = poslední poll cloud appky uspěl v posledních 36 s (3× klidový interval)
+
+### Log — typy záznamů (`/api/log`)
+
+| `trigger` | Význam |
+|---|---|
+| 0 | Manuálně (dashboard, záložka Manuální) |
+| 1 | Program (týdenní rozvrh) |
+| 2 | Test relé (`zone` = 0, systémová událost) |
+| 3 | Sekvence (položka z fronty) |
+
+Poznámky (`note`): `Spuštěno`, `Spuštěno (paralelně)`, `Zařazeno do fronty`,
+`Fronta plná — přeskočeno`, `Přeskočeno — pauza zálivky`, `Přeskočeno — pršelo X mm`,
+`Přeskočeno — předpověď X mm`, `Test relé spuštěn`, `Test relé dokončen`.
+Log je jen v RAM (posledních `LOG_MAX_ENTRIES` = 40 záznamů) — restart ho vymaže.
 
 > Všechny POST požadavky musí mít hlavičku `Content-Type: application/json`, jinak vrátí 415.
 > Je to ochrana proti CSRF — cizí stránka otevřená v prohlížeči na domácí síti nemůže bez
@@ -327,7 +420,14 @@ krátkodobou frontu požadavků
 
 **Jedno HTML pro obojí:** dashboard je napsaný jen jednou ve `webui.cpp`; do
 `cloud/lib/dashboard.template.html` ho kopíruje `tools/sync_cloud_template.sh`
-(po každé úpravě UI spusť znovu, `--check` ověří shodu).
+(po každé úpravě UI spusť znovu, `--check` ověří shodu). Cloud appka do HTML
+doplní `window.CLOUD_MODE = true`, podle čehož `api()` v JS posílá požadavky přes
+`/api/proxy` místo přímo na ESP32 a zobrazí odhlášení + indikátor online/offline.
+
+**Postup při změně UI:**
+1. uprav HTML/JS ve `webui.cpp`
+2. `tools/sync_cloud_template.sh`
+3. nahraj firmware do ESP32 a pushni — Vercel nasadí novou šablonu sám
 
 ---
 
