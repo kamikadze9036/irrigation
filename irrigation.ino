@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 //  IRRIGATION CONTROLLER
 //  ESP32-WROOM + 8-kanálové relé (Active HIGH)
-//  v1.0.0
+//  verze: viz FW_VERSION v config.h
 //
 //  Potřebné knihovny (Arduino Library Manager):
 //    - ArduinoJson  (Benoit Blanchon)
@@ -228,6 +228,7 @@ void setup() {
 
   // Cloud sync — vzdálený přístup (volitelný, viz config.h). Vlastní task,
   // protože dělá blokující HTTPS požadavky (nesmí zdržovat hlavní smyčku/zóny).
+  // 16 kB stack — TLS handshake s ověřením CA (mbedTLS) potřebuje rezervu.
   CloudSync_Init();
   xTaskCreatePinnedToCore(
     [](void *) {
@@ -236,7 +237,7 @@ void setup() {
         vTaskDelay(1 / portTICK_PERIOD_MS);
       }
     },
-    "CloudSync", 12288, nullptr, 1, nullptr, 0);
+    "CloudSync", 16384, nullptr, 1, nullptr, 0);
   Serial.println("[INIT] CloudSync task spuštěn na core 0");
 
   // První weather update (odloženo — čekáme na síť)
@@ -301,7 +302,8 @@ void loop() {
     }
   }
 
-  // ── Scheduler tick (každých 15 s — zajistí spuštění v každé minutě) ──
+  // ── Scheduler tick (každých 15 s; scheduler má 5min catch-up okno, takže
+  //    delší zablokování smyčky (WiFi/NTP/počasí) program nemine) ──
   if (now - lastSchedulerTick >= 15000UL) {
     lastSchedulerTick = now;
     Scheduler_Tick();
@@ -337,7 +339,7 @@ void loop() {
                        ? (String(runCount) + " zón" + (runCount == 1 ? "a" : "y") + " běží")
                        : "Klidový stav";
 
-    if (getLocalTime(&ti)) {
+    if (getLocalTime(&ti, 0)) {   // 0 = neblokovat 5 s, když čas není synchronizován
       char buf[20];
       strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M", &ti);
       Serial.printf("[STATUS] %s | %s:%s | %s\n",

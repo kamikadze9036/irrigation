@@ -48,6 +48,11 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 #define CLOUD_ENABLED           true
 #define CLOUD_BASE_URL          ""     // např. "https://tvoje-appka.vercel.app" (bez lomítka na konci)
 #define CLOUD_DEVICE_TOKEN      ""     // musí být identické s DEVICE_TOKEN nastaveným na Vercelu
-#define CLOUD_POLL_INTERVAL_MS  4000
+#define CLOUD_POLL_INTERVAL_MS  4000     // rychlý poll — chvíli po posledním požadavku (otevřený dashboard)
+#define CLOUD_POLL_IDLE_MS      12000    // klidový poll — šetří invokace na Vercelu a příkazy v Redisu
+#define CLOUD_ACTIVE_WINDOW_MS  180000   // jak dlouho po požadavku zůstat v rychlém režimu
+// Ověření TLS certifikátu appky proti kořenovým CA v cloud_ca.h. Vypnout jen
+// pro ladění — bez ověření může kdokoli "po cestě" odchytit device token.
+#define CLOUD_TLS_VERIFY        true
 
-#define FW_VERSION  "1.0.0"
+#define FW_VERSION  "1.3.0"

@@ -18,6 +18,46 @@ struct StorageLock {
   ~StorageLock() { if (storageMutex) xSemaphoreGiveRecursive(storageMutex); }
 };
 
+// Struktury se ukládají jako raw bytes. Pokud se v nové verzi firmware změní
+// jejich layout, uložená délka nesedí — v tom případě se použijí výchozí
+// hodnoty místo načtení smetí. (Délka záznamu tak funguje jako verze.)
+// Díky tomu je zároveň možné uložit legitimní nulu (prodleva 0 s, práh 0 mm) —
+// výchozí hodnoty se doplňují jen když záznam chybí, ne když je pole nulové.
+static bool readBlob(const char *ns, void *out, size_t len) {
+  openNs(ns, false);
+  bool ok = prefs.getBytesLength("cfg") == len && prefs.getBytes("cfg", out, len) == len;
+  prefs.end();
+  return ok;
+}
+
+static void writeBlob(const char *ns, const void *data, size_t len) {
+  openNs(ns, true);
+  prefs.putBytes("cfg", data, len);
+  prefs.end();
+}
+
+// ── Výchozí hodnoty ──────────────────────────────────────────────
+static ZoneConfig defaultZone(uint8_t z) {
+  ZoneConfig cfg = {};
+  snprintf(cfg.name, sizeof(cfg.name), "Okruh %d", z);
+  cfg.enabled = true;
+  for (int p = 0; p < MAX_PROGRAMS_PER_ZONE; p++) cfg.programs[p] = {false, 0, 6, 0, 10};
+  return cfg;
+}
+
+static WeatherSettings defaultWeather(void) {
+  return WeatherSettings{true, true, 5.0f, 3.0f, WEATHER_LAT, WEATHER_LON};
+}
+
+static SystemSettings defaultSystem(void) {
+  SystemSettings ss = {};
+  ss.masterValveEnabled = true;
+  ss.masterPreDelay  = MASTER_VALVE_PRE_S;
+  ss.masterPostDelay = MASTER_VALVE_POST_S;
+  strlcpy(ss.ntpServer, NTP_SERVER, sizeof(ss.ntpServer));
+  return ss;
+}
+
 void Storage_Init(void) {
   if (!storageMutex) storageMutex = xSemaphoreCreateRecursiveMutex();
   StorageLock lock;
@@ -27,28 +67,9 @@ void Storage_Init(void) {
   prefs.end();
   if (magic != 0xAB) {
     Serial.println("[STOR] První spuštění — nahrávám výchozí nastavení");
-
-    const char *names[6] = {"Okruh 1","Okruh 2","Okruh 3","Okruh 4","Okruh 5","Okruh 6"};
-    for (uint8_t z = 1; z <= 6; z++) {
-      ZoneConfig cfg = {};
-      strlcpy(cfg.name, names[z-1], 32);
-      cfg.enabled = true;
-      for (int p = 0; p < MAX_PROGRAMS_PER_ZONE; p++) {
-        cfg.programs[p] = {false, 0, 6, 0, 10};
-      }
-      Storage_SetZone(z, cfg);
-    }
-
-    WeatherSettings ws = {true, true, 5.0f, 3.0f, WEATHER_LAT, WEATHER_LON};
-    Storage_SetWeather(ws);
-
-    SystemSettings ss = {};
-    ss.masterValveEnabled = true;
-    ss.masterPreDelay  = MASTER_VALVE_PRE_S;
-    ss.masterPostDelay = MASTER_VALVE_POST_S;
-    strlcpy(ss.ntpServer, NTP_SERVER, 64);
-    Storage_SetSystem(ss);
-
+    for (uint8_t z = 1; z <= ZONE_COUNT; z++) Storage_SetZone(z, defaultZone(z));
+    Storage_SetWeather(defaultWeather());
+    Storage_SetSystem(defaultSystem());
     openNs("sys", true);
     prefs.putUChar("magic", 0xAB);
     prefs.end();
@@ -57,62 +78,49 @@ void Storage_Init(void) {
   }
 }
 
+static void zoneNs(uint8_t z, char *buf, size_t len) { snprintf(buf, len, "zone%d", z); }
+
 ZoneConfig Storage_GetZone(uint8_t z) {
-  ZoneConfig cfg = {};
-  if (z < 1 || z > 6) return cfg;
+  if (z < 1 || z > ZONE_COUNT) return ZoneConfig{};
   StorageLock lock;
-  char ns[8]; snprintf(ns, 8, "zone%d", z);
-  openNs(ns, false);
-  prefs.getBytes("cfg", &cfg, sizeof(cfg));
-  prefs.end();
+  char ns[8]; zoneNs(z, ns, sizeof(ns));
+  ZoneConfig cfg;
+  if (!readBlob(ns, &cfg, sizeof(cfg))) cfg = defaultZone(z);
+  cfg.name[sizeof(cfg.name) - 1] = '\0';
   return cfg;
 }
 
 void Storage_SetZone(uint8_t z, const ZoneConfig &cfg) {
-  if (z < 1 || z > 6) return;
+  if (z < 1 || z > ZONE_COUNT) return;
   StorageLock lock;
-  char ns[8]; snprintf(ns, 8, "zone%d", z);
-  openNs(ns, true);
-  prefs.putBytes("cfg", &cfg, sizeof(cfg));
-  prefs.end();
+  char ns[8]; zoneNs(z, ns, sizeof(ns));
+  writeBlob(ns, &cfg, sizeof(cfg));
 }
 
 WeatherSettings Storage_GetWeather(void) {
-  WeatherSettings ws = {};
   StorageLock lock;
-  openNs("weather", false);
-  prefs.getBytes("cfg", &ws, sizeof(ws));
-  prefs.end();
-  if (ws.latitude == 0) { ws.latitude = WEATHER_LAT; ws.longitude = WEATHER_LON; }
-  if (ws.pastRainThreshMm == 0) ws.pastRainThreshMm = 5.0f;
-  if (ws.forecastRainThreshMm == 0) ws.forecastRainThreshMm = 3.0f;
+  WeatherSettings ws;
+  if (!readBlob("weather", &ws, sizeof(ws))) ws = defaultWeather();
   return ws;
 }
 
 void Storage_SetWeather(const WeatherSettings &ws) {
   StorageLock lock;
-  openNs("weather", true);
-  prefs.putBytes("cfg", &ws, sizeof(ws));
-  prefs.end();
+  writeBlob("weather", &ws, sizeof(ws));
 }
 
 SystemSettings Storage_GetSystem(void) {
-  SystemSettings ss = {};
   StorageLock lock;
-  openNs("system", false);
-  prefs.getBytes("cfg", &ss, sizeof(ss));
-  prefs.end();
-  if (ss.ntpServer[0] == '\0') strlcpy(ss.ntpServer, NTP_SERVER, 64);
-  if (ss.masterPreDelay == 0)  ss.masterPreDelay  = MASTER_VALVE_PRE_S;
-  if (ss.masterPostDelay == 0) ss.masterPostDelay = MASTER_VALVE_POST_S;
+  SystemSettings ss;
+  if (!readBlob("system", &ss, sizeof(ss))) ss = defaultSystem();
+  ss.ntpServer[sizeof(ss.ntpServer) - 1] = '\0';
+  if (ss.ntpServer[0] == '\0') strlcpy(ss.ntpServer, NTP_SERVER, sizeof(ss.ntpServer));
   return ss;
 }
 
 void Storage_SetSystem(const SystemSettings &ss) {
   StorageLock lock;
-  openNs("system", true);
-  prefs.putBytes("cfg", &ss, sizeof(ss));
-  prefs.end();
+  writeBlob("system", &ss, sizeof(ss));
 }
 
 // ── Pauza zálivky (uložena jako samostatný klíč — neovlivní ostatní nastavení) ──
@@ -133,19 +141,17 @@ void Storage_SetPauseUntil(time_t t) {
 
 // ── WiFi přihlašovací údaje ──────────────────────────────────────
 WiFiCredentials Storage_GetWiFiCreds(void) {
-  WiFiCredentials creds = {};
   StorageLock lock;
-  openNs("wificred", false);
-  prefs.getBytes("cfg", &creds, sizeof(creds));
-  prefs.end();
+  WiFiCredentials creds;
+  if (!readBlob("wificred", &creds, sizeof(creds))) creds = WiFiCredentials{};
+  creds.ssid[sizeof(creds.ssid) - 1] = '\0';
+  creds.password[sizeof(creds.password) - 1] = '\0';
   return creds;
 }
 
 void Storage_SetWiFiCreds(const WiFiCredentials &creds) {
   StorageLock lock;
-  openNs("wificred", true);
-  prefs.putBytes("cfg", &creds, sizeof(creds));
-  prefs.end();
+  writeBlob("wificred", &creds, sizeof(creds));
 }
 
 void Storage_ClearWiFiCreds(void) {

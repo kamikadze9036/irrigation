@@ -5,7 +5,9 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 
-const ONLINE_THRESHOLD_MS = 20000; // ~2× interval pollování ESP32
+// ESP32 v klidu polluje každých CLOUD_POLL_IDLE_MS (12 s, viz config.h) —
+// práh musí být s rezervou větší, jinak indikátor bliká offline/online.
+const ONLINE_THRESHOLD_MS = 30000;
 
 export async function GET() {
   const last = await redis.get<number>("lastSeen");

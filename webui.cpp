@@ -25,6 +25,7 @@ static const char HTML_PAGE[] PROGMEM = R"rawhtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--CLOUD_MODE-->
 <title>Závlaha — Správce</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -104,11 +105,12 @@ label{font-size:12px;color:#aaa;display:block;margin-bottom:3px;margin-top:8px}
 </nav>
 
 <!-- ── STATUS ŘÁDEK ───────────────────────────────────────────── -->
-<div id="sysbar" style="background:#0a1628;border-bottom:1px solid #0f3460;padding:4px 16px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#667">
+<div id="sysbar" style="background:#0a1628;border-bottom:1px solid #0f3460;padding:4px 16px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#667;align-items:center">
   <span>&#128246; <span id="sb-wifi">--</span> <span id="sb-rssi" style="color:#aaa;font-size:11px"></span></span>
   <span>&#127760; <span id="sb-ip">--</span></span>
   <span>&#128336; <span id="sb-time2">--:--</span></span>
-  <span>&#9729; Cloud: <span id="sb-cloud">--</span></span>
+  <span>&#9729; <span id="sb-cloud-lbl">Cloud</span>: <span id="sb-cloud">--</span></span>
+  <a href="#" id="logout-link" hidden onclick="logout();return false" style="color:#e74c3c;margin-left:auto;text-decoration:none">&#128274; Odhlásit</a>
 </div>
 
 <!-- ── DASHBOARD ──────────────────────────────────────────────── -->
@@ -384,13 +386,49 @@ function updateClock() {
 setInterval(updateClock, 1000); updateClock();
 
 // ── API helper ───────────────────────────────────────────────────
+// window.CLOUD_MODE nastaví relay appka (cloud/lib/dashboardHtml.ts) — pak jde
+// každý požadavek přes /api/proxy a ESP32 ho přehraje na sobě (viz cloud_sync.cpp).
+// Lokálně jde fetch přímo na ESP32. Content-Type application/json je i CSRF
+// ochrana — ESP32 POST bez něj odmítne (viz requireJson v webui.cpp).
 async function api(path, method='GET', body=null) {
-  const opts = {method, headers:{'Content-Type':'application/json'}};
-  if(body) opts.body = JSON.stringify(body);
   try {
-    const r = await fetch(path, opts);
+    let r;
+    if(window.CLOUD_MODE) {
+      r = await fetch('/api/proxy', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({path, method, body: body ? JSON.stringify(body) : null})
+      });
+      if(r.status === 401) { location.href = '/login'; return {error:'unauthorized'}; }
+      if(r.status === 504) { return {error:'Zařízení neodpovídá — je online?'}; }
+    } else {
+      const opts = {method, headers:{'Content-Type':'application/json'}};
+      if(body) opts.body = JSON.stringify(body);
+      r = await fetch(path, opts);
+    }
     return await r.json();
   } catch(e) { return {error: e.toString()}; }
+}
+
+// ── Cloud mód — stejné HTML servíruje i relay appka na Vercelu ───
+if(window.CLOUD_MODE) {
+  document.getElementById('sb-cloud-lbl').textContent = 'Zařízení';
+  document.getElementById('logout-link').hidden = false;
+  setInterval(refreshCloudStatus, 10000);
+  refreshCloudStatus();
+}
+async function refreshCloudStatus() {
+  try {
+    const r = await fetch('/api/device/status');
+    const d = await r.json();
+    const el = document.getElementById('sb-cloud');
+    if(d.online) { el.textContent = 'online';  el.style.color = '#00d4aa'; }
+    else         { el.textContent = 'offline'; el.style.color = '#e74c3c'; }
+  } catch(e) {}
+}
+async function logout() {
+  await fetch('/api/logout', {method:'POST'});
+  location.href = '/login';
 }
 
 // ── Dashboard refresh ────────────────────────────────────────────
@@ -404,10 +442,12 @@ async function refreshDashboard() {
   if(d.ip)   document.getElementById('sb-ip').textContent   = d.ip;
   if(d.time) document.getElementById('sb-time2').textContent = d.time;
 
-  const cloudEl = document.getElementById('sb-cloud');
-  if(!d.cloudConfigured) { cloudEl.textContent = 'nenastaveno'; cloudEl.style.color = '#888'; }
-  else if(d.cloudOnline) { cloudEl.textContent = 'připojeno';   cloudEl.style.color = '#00d4aa'; }
-  else                   { cloudEl.textContent = 'nedostupné';  cloudEl.style.color = '#e74c3c'; }
+  if(!window.CLOUD_MODE) {
+    const cloudEl = document.getElementById('sb-cloud');
+    if(!d.cloudConfigured) { cloudEl.textContent = 'nenastaveno'; cloudEl.style.color = '#888'; }
+    else if(d.cloudOnline) { cloudEl.textContent = 'připojeno';   cloudEl.style.color = '#00d4aa'; }
+    else                   { cloudEl.textContent = 'nedostupné';  cloudEl.style.color = '#e74c3c'; }
+  }
 
   document.getElementById('st-date').textContent = d.date || '--';
   document.getElementById('st-time').textContent = d.time || '--:--';
@@ -420,7 +460,7 @@ async function refreshDashboard() {
   if(d.weatherSkip) {
     wa.innerHTML = '<div class="alert alert-warn">&#9888; Zálivka dnes PŘESKOČENA kvůli srážkám</div>';
   } else {
-    wa.innerHTML = '<div class="alert alert-ok">&#10003; Počasí OK — zálivka povolena</div>';
+    wa.innerHTML = '<div class="alert alert-ok">✓ Počasí OK — zálivka povolena</div>';
   }
   wd.textContent = d.weatherStatus || '';
 
@@ -493,7 +533,7 @@ async function setPause() {
   const until = Math.floor(d.getTime() / 1000);
   const r = await api('/api/pause', 'POST', {until});
   if(r.ok) { await loadPauseStatus(); }
-  else alert('&#10007; Chyba: '+(r.error||''));
+  else alert('✗ Chyba: '+(r.error||''));
 }
 
 async function clearPause() {
@@ -504,6 +544,7 @@ async function clearPause() {
 // ── Zóny (konfigurace) ───────────────────────────────────────────
 // bit0=Po, bit1=Út, bit2=St, bit3=Čt, bit4=Pá, bit5=So, bit6=Ne
 const DAY_LABELS = ['Po','Út','St','Čt','Pá','So','Ne'];
+let _zoneCount = 0;
 
 function dayCheckboxes(progIdx, zoneIdx, days) {
   return DAY_LABELS.map((d,i) =>
@@ -522,6 +563,7 @@ function getDayMask(zoneIdx, progIdx) {
 async function loadZones() {
   const d = await api('/api/zones');
   if(!d.zones) return;
+  _zoneCount = d.zones.length;
   const container = document.getElementById('zones-container');
   container.innerHTML = d.zones.map((z,zi) => {
     const zi1 = zi+1;
@@ -558,7 +600,7 @@ async function loadZones() {
 
 async function saveAllZones() {
   const zones = [];
-  for(let zi1=1; zi1<=6; zi1++) {
+  for(let zi1=1; zi1<=_zoneCount; zi1++) {
     const programs = [];
     for(let pi=0; pi<3; pi++) {
       const timeVal = document.getElementById(`p-time-${zi1}-${pi}`)?.value || '06:00';
@@ -578,7 +620,7 @@ async function saveAllZones() {
     });
   }
   const r = await api('/api/zones', 'POST', {zones});
-  alert(r.ok ? '&#10003; Uloženo!' : '&#10007; Chyba při ukládání');
+  alert(r.ok ? '✓ Uloženo!' : '✗ Chyba při ukládání');
 }
 
 // ── Manuální ──────────────────────────────────────────────────────
@@ -602,8 +644,8 @@ async function manualRun() {
   if(!zone || !dur) return;
   const r = await api('/api/run', 'POST', {zone, minutes: dur, parallel});
   alert(r.ok
-    ? `&#10003; Zóna ${zone} spuštěna na ${dur} min${parallel?' (paralelně)':''}`
-    : '&#10007; Chyba: '+r.error);
+    ? `✓ Zóna ${zone} spuštěna na ${dur} min${parallel?' (paralelně)':''}`
+    : '✗ Chyba: '+r.error);
   refreshDashboard();
 }
 
@@ -654,12 +696,12 @@ async function runSequence() {
   if(_seqList.length === 0) { alert('Přidej aspoň jednu zónu'); return; }
   const r = await api('/api/run-sequence', 'POST', {sequence: _seqList});
   if(r.ok) {
-    document.getElementById('seq-status').textContent = '&#10003; Sekvence spuštěna — '+r.count+' zón';
+    document.getElementById('seq-status').textContent = '✓ Sekvence spuštěna — '+r.count+' zón';
     _seqList = [];
     renderSeqList();
     refreshDashboard();
   } else {
-    document.getElementById('seq-status').textContent = '&#10007; Chyba: '+(r.error||'');
+    document.getElementById('seq-status').textContent = '✗ Chyba: '+(r.error||'');
   }
 }
 
@@ -669,9 +711,16 @@ async function stopZone() {
 }
 
 async function runTest() {
-  document.getElementById('test-status').textContent = 'Test probíhá... (každá zóna ~3 s)';
+  const st = document.getElementById('test-status');
   const r = await api('/api/test', 'POST', {});
-  document.getElementById('test-status').textContent = r.ok ? '&#10003; Test dokončen' : '&#10007; Chyba: '+r.error;
+  if(!r.ok) { st.textContent = '✗ Chyba: '+(r.error||''); return; }
+  st.textContent = 'Test probíhá... (každá zóna ~3 s)';
+  const poll = async () => {
+    const d = await api('/api/status');
+    if(d.testRunning) setTimeout(poll, 2000);
+    else st.textContent = '✓ Test dokončen';
+  };
+  setTimeout(poll, 2000);
 }
 
 // ── Počasí ─────────────────────────────────────────────────────────
@@ -695,7 +744,7 @@ async function loadWeatherSettings() {
     }
     document.getElementById('w-skip-status').innerHTML = d.data.shouldSkip
       ? '<span class="skip-badge">&#9940; Zálivka přeskočena</span>'
-      : '<span class="ok-badge">&#10003; Zálivka povolena</span>';
+      : '<span class="ok-badge">✓ Zálivka povolena</span>';
   }
 }
 
@@ -708,7 +757,7 @@ async function saveWeather() {
     skipPast: document.getElementById('w-skip-past').checked,
     skipFore: document.getElementById('w-skip-fore').checked
   });
-  alert(r.ok ? '&#10003; Uloženo!' : '&#10007; Chyba');
+  alert(r.ok ? '✓ Uloženo!' : '✗ Chyba');
 }
 
 async function fetchWeather() {
@@ -730,10 +779,10 @@ async function setTimeFromBrowser() {
   const r = await api('/api/time', 'POST', {epoch});
   const el = document.getElementById('time-set-status');
   if(r.ok) {
-    el.innerHTML = '&#10003; Čas nastaven: ' + new Date().toLocaleString('cs-CZ');
+    el.innerHTML = '✓ Čas nastaven: ' + new Date().toLocaleString('cs-CZ');
     el.style.color = '#00d4aa';
   } else {
-    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.textContent = '✗ Chyba: ' + (r.error || '');
     el.style.color = '#e74c3c';
   }
 }
@@ -745,10 +794,10 @@ async function setTimeManual() {
   const r = await api('/api/time', 'POST', {epoch});
   const el = document.getElementById('time-set-status');
   if(r.ok) {
-    el.innerHTML = '&#10003; Čas nastaven: ' + new Date(val).toLocaleString('cs-CZ');
+    el.innerHTML = '✓ Čas nastaven: ' + new Date(val).toLocaleString('cs-CZ');
     el.style.color = '#00d4aa';
   } else {
-    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.textContent = '✗ Chyba: ' + (r.error || '');
     el.style.color = '#e74c3c';
   }
 }
@@ -758,7 +807,7 @@ async function loadWiFi() {
   const d = await api('/api/wifi');
   const el = document.getElementById('wifi-current');
   if(d.connected) {
-    el.innerHTML = '&#10003; Připojeno: <strong>' + d.currentSSID + '</strong> <span style="color:#aaa;font-size:11px">(' + d.rssi + ' dBm)</span>';
+    el.innerHTML = '✓ Připojeno: <strong>' + d.currentSSID + '</strong> <span style="color:#aaa;font-size:11px">(' + d.rssi + ' dBm)</span>';
   } else {
     el.innerHTML = '&#9888; Není připojeno k domácí WiFi (AP mód)';
   }
@@ -780,7 +829,7 @@ async function wifiScan() {
       attempts++;
       scanEl.innerHTML = '<span style="color:#aaa;font-size:12px">&#128269; Skenuji sítě... (' + attempts + ' s)</span>';
       if(attempts < 15) setTimeout(poll, 1000);
-      else scanEl.innerHTML = '<span style="color:#e74c3c;font-size:12px">&#10007; Scan timeout</span>';
+      else scanEl.innerHTML = '<span style="color:#e74c3c;font-size:12px">✗ Scan timeout</span>';
       return;
     }
     if(!d.networks || d.networks.length === 0) {
@@ -815,11 +864,11 @@ async function wifiSave(doRestart) {
       el.innerHTML = '&#128260; Restartuji... Připoj se na domácí WiFi a otevři <strong>http://irrigation.local</strong>';
       el.style.color = '#00d4aa';
     } else {
-      el.innerHTML = '&#10003; Uloženo — změna se projeví po restartu';
+      el.innerHTML = '✓ Uloženo — změna se projeví po restartu';
       el.style.color = '#00d4aa';
     }
   } else {
-    el.textContent = '&#10007; Chyba: ' + (r.error || '');
+    el.textContent = '✗ Chyba: ' + (r.error || '');
     el.style.color = '#e74c3c';
   }
 }
@@ -832,7 +881,7 @@ async function wifiClear() {
     document.getElementById('wifi-pass').value = '';
     document.getElementById('wifi-pass').placeholder = 'Heslo WiFi';
     const el = document.getElementById('wifi-status');
-    el.innerHTML = '&#10003; Smazáno — po restartu použiji config.h';
+    el.innerHTML = '✓ Smazáno — po restartu použiji config.h';
     el.style.color = '#00d4aa';
   }
 }
@@ -861,7 +910,7 @@ async function saveSystem() {
     postDelay: parseInt(document.getElementById('ss-post').value),
     ntp: document.getElementById('ss-ntp').value
   });
-  alert(r.ok ? '&#10003; Uloženo!' : '&#10007; Chyba');
+  alert(r.ok ? '✓ Uloženo!' : '✗ Chyba');
 }
 
 async function clearLog() {
@@ -882,7 +931,7 @@ async function loadLog() {
     tbody.innerHTML = '<tr><td colspan="5" style="color:#888;text-align:center">Žádné záznamy</td></tr>';
     return;
   }
-  const trigLabels = ['Manuálně','Program','Test'];
+  const trigLabels = ['Manuálně','Program','Test','Sekvence'];
   tbody.innerHTML = d.entries.map(e => {
     const dt = new Date(e.timestamp * 1000);
     return `<tr>
@@ -904,8 +953,20 @@ async function loadLog() {
 // ═══════════════════════════════════════════════════════════════
 
 static void sendJson(const String &json) {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", json);
+}
+
+// CSRF ochrana pro POST: vyžadujeme Content-Type application/json.
+// Cizí webová stránka otevřená v prohlížeči na domácí síti může na ESP32
+// poslat "simple" POST (text/plain) bez CORS preflightu. application/json
+// preflight (OPTIONS) vyžaduje a ten tady záměrně neobsluhujeme, takže
+// prohlížeč takový cross-origin požadavek zablokuje. Vlastní UI i cloud
+// replay (cloud_sync.cpp) hlavičku posílají vždy.
+static bool requireJson() {
+  if (server.header("Content-Type").startsWith("application/json")) return true;
+  server.send(415, "application/json",
+              "{\"ok\":false,\"error\":\"Content-Type musí být application/json\"}");
+  return false;
 }
 
 static void handleRoot() {
@@ -925,7 +986,7 @@ static void handleStatus() {
   WeatherData wd = Weather_GetData();
 
   struct tm ti;
-  bool timeOk = getLocalTime(&ti);
+  bool timeOk = getLocalTime(&ti, 0);   // 0 = neblokovat, když čas není synchronizován
   char dateBuf[16] = "--";
   char timeBuf[8]  = "--:--";
   if (timeOk) {
@@ -949,6 +1010,7 @@ static void handleStatus() {
   doc["rssi"]          = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   doc["cloudConfigured"] = CloudSync_IsConfigured();
   doc["cloudOnline"]     = CloudSync_IsOnline();
+  doc["testRunning"]     = Zones_TestRunning();
 
   // Běžící zóny (může jich být více při paralelním módu)
   JsonArray running = doc["runningZones"].to<JsonArray>();
@@ -960,7 +1022,10 @@ static void handleStatus() {
     rz["zone"]     = z;
     rz["name"]     = zc.name;
     rz["duration"] = zrs.durationMin;
-    rz["elapsed"]  = (uint16_t)((millis() - zrs.startMs) / 60000UL);
+    unsigned long nowMs = millis();
+    rz["elapsed"]  = ((long)(nowMs - zrs.startMs) >= 0)   // 0 dokud se čeká na master ventil
+                       ? (uint16_t)((nowMs - zrs.startMs) / 60000UL) : 0;
+    rz["waiting"]  = !zrs.relayOn;
   }
 
   // Všechny zóny pro grid
@@ -1009,6 +1074,7 @@ static void handleGetZones() {
 //  POST /api/zones
 // ═══════════════════════════════════════════════════════════════
 static void handlePostZones() {
+  if (!requireJson()) return;
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"JSON parse error\"}");
@@ -1040,6 +1106,7 @@ static void handlePostZones() {
 //  Body: {"zone":1,"minutes":5,"parallel":false}
 // ═══════════════════════════════════════════════════════════════
 static void handleRun() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   uint8_t  zone     = doc["zone"].as<uint8_t>();
@@ -1054,6 +1121,7 @@ static void handleRun() {
 //  Body: {"sequence":[{"zone":1,"minutes":20},{"zone":2,"minutes":15}]}
 // ═══════════════════════════════════════════════════════════════
 static void handleRunSequence() {
+  if (!requireJson()) return;
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"JSON error\"}");
@@ -1074,10 +1142,10 @@ static void handleRunSequence() {
     uint16_t m = entry["minutes"].as<uint16_t>();
     if (z < 1 || z > ZONE_COUNT || m == 0 || m > 120) continue;
     if (first) {
-      Zone_Start(z, m, RUN_SEQUENCE, false);
+      if (!Zone_Start(z, m, RUN_SEQUENCE, false)) continue;
       first = false;
-    } else {
-      Queue_Add(z, m);
+    } else if (!Queue_Add(z, m, RUN_SEQUENCE)) {
+      continue;   // fronta plná
     }
     count++;
   }
@@ -1095,22 +1163,20 @@ static void handleRunSequence() {
 //  POST /api/stop
 // ═══════════════════════════════════════════════════════════════
 static void handleStop() {
+  if (!requireJson()) return;
   Zone_StopAll();
   sendJson("{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  POST /api/test — každá zóna ~3 s
+//  POST /api/test — každá zóna ~3 s (neblokující, viz zones.cpp)
 // ═══════════════════════════════════════════════════════════════
 static void handleTest() {
-  Zone_StopAll();
-  for (uint8_t z = 1; z <= ZONE_COUNT; z++) {
-    Zone_Start(z, 1, RUN_TEST, false);
-    delay(3000);
-    Zone_Stop(z);
-    delay(300);
-  }
-  sendJson("{\"ok\":true}");
+  if (!requireJson()) return;
+  // Test běží jako stavový automat v Zones_Tick() — handler neblokuje.
+  // Průběh sleduje UI přes "testRunning" v /api/status.
+  bool ok = Zones_StartTest();
+  sendJson(ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Test už běží\"}");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1139,6 +1205,7 @@ static void handleGetWeather() {
 //  POST /api/weather
 // ═══════════════════════════════════════════════════════════════
 static void handlePostWeather() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   WeatherSettings ws = Storage_GetWeather();
@@ -1176,6 +1243,7 @@ static void handleGetPause() {
 //  Body: {"until": 1234567890}  — unix timestamp; 0 = zrušit pauzu
 // ═══════════════════════════════════════════════════════════════
 static void handleSetPause() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   time_t until = (time_t)doc["until"].as<long>();
@@ -1195,6 +1263,7 @@ static void handleSetPause() {
 //  POST /api/weather/refresh
 // ═══════════════════════════════════════════════════════════════
 static void handleWeatherRefresh() {
+  if (!requireJson()) return;
   triggerWeatherUpdate();
   sendJson("{\"ok\":true}");
 }
@@ -1223,6 +1292,7 @@ static void handleGetSystem() {
 //  POST /api/system
 // ═══════════════════════════════════════════════════════════════
 static void handlePostSystem() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   SystemSettings ss = Storage_GetSystem();
@@ -1259,6 +1329,7 @@ static void handleGetLog() {
 //  POST /api/log/clear
 // ═══════════════════════════════════════════════════════════════
 static void handleLogClear() {
+  if (!requireJson()) return;
   Log_Clear();
   sendJson("{\"ok\":true}");
 }
@@ -1267,6 +1338,7 @@ static void handleLogClear() {
 //  POST /api/restart
 // ═══════════════════════════════════════════════════════════════
 static void handleRestart() {
+  if (!requireJson()) return;
   sendJson("{\"ok\":true}");
   delay(500);
   ESP.restart();
@@ -1277,6 +1349,7 @@ static void handleRestart() {
 //  Body: {"epoch": 1234567890}  — nastaví systémový čas (RAM, do restartu)
 // ═══════════════════════════════════════════════════════════════
 static void handleSetTime() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   long epoch = doc["epoch"].as<long>();
@@ -1284,9 +1357,10 @@ static void handleSetTime() {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"Neplatný epoch\"}");
     return;
   }
-  struct timeval tv = { (time_t)epoch, 0 };
+  time_t t = (time_t)epoch;
+  struct timeval tv = { t, 0 };
   settimeofday(&tv, nullptr);
-  struct tm *ti = localtime((time_t*)&epoch);
+  struct tm *ti = localtime(&t);
   char buf[32];
   strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M:%S", ti);
   Serial.printf("[WEB] Čas nastaven ručně: %s\n", buf);
@@ -1313,6 +1387,7 @@ static void handleGetWiFi() {
 //  Body: {"ssid":"...","password":"...","restart":true/false}
 // ═══════════════════════════════════════════════════════════════
 static void handlePostWiFi() {
+  if (!requireJson()) return;
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   const char *ssid = doc["ssid"].as<const char*>();
@@ -1417,6 +1492,8 @@ void WebUI_Init(void) {
   server.on("/api/wifi",            HTTP_POST, handlePostWiFi);
   server.on("/api/wifi/scan",       HTTP_GET,  handleWiFiScan);
   server.on("/api/restart",         HTTP_POST, handleRestart);
+  static const char *collectHdr[] = {"Content-Type"};
+  server.collectHeaders(collectHdr, 1);   // kvůli requireJson()
   server.begin();
   Serial.println("[WEB] HTTP server spuštěn na portu 80");
 }

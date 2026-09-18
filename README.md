@@ -74,14 +74,14 @@ Princip ventilu: `COM (24V AC pól A) → Relé NO → cívka ventilu → pól B
 ## Funkce
 
 - **6 nezávislých zón**, každá s 3 programy (den v týdnu / čas / délka)
-- **Týdenní rozvrh** — libovolná kombinace dní, nezávisle na každém programu
-- **Master ventil / čerpadlo** — automatická prodleva před a po zálivce
+- **Týdenní rozvrh** — libovolná kombinace dní, nezávisle na každém programu; programy, které se sejdou nebo připadnou do běžící zálivky, se řadí do fronty (nic se tiše nezahodí); spuštění má 5min catch-up okno, takže ho nemine ani delší výpadek WiFi/NTP
+- **Master ventil / čerpadlo** — automatická prodleva před a po zálivce (neblokující; při přepnutí zóny zůstává otevřený)
 - **Přeskočení zálivky podle počasí** — Open-Meteo API (bez registrace, bez API klíče):
   - pokud pršelo více než X mm za posledních 24 h
   - pokud je v předpovědi více než X mm v příštích 24 h
 - **Manuální spuštění** libovolné zóny na zvolený počet minut
-- **Test relé** — každá zóna ~3 sekundy (ověření zapojení před instalací)
-- **In-memory log** posledních 40 zálivek (zóna, délka, typ, čas)
+- **Test relé** — každá zóna ~3 sekundy, běží na pozadí (ověření zapojení před instalací)
+- **In-memory log** posledních 40 událostí (spuštění, zařazení do fronty, přeskočení kvůli počasí/pauze, test relé)
 - **NTP** synchronizace času — automaticky po připojení, resync každých 24 h
 - **mDNS** — admin dostupný jako `http://irrigation.local` (v STA módu)
 - **WiFi STA reconnect** — automatické znovupřipojení k domácí síti každých 30 s
@@ -214,7 +214,9 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 #define CLOUD_ENABLED           true
 #define CLOUD_BASE_URL          ""   // prázdné = vypnuto; jinak "https://tvuj-projekt.vercel.app"
 #define CLOUD_DEVICE_TOKEN      ""   // musí sedět s DEVICE_TOKEN nastaveným na Vercelu
-#define CLOUD_POLL_INTERVAL_MS  4000
+#define CLOUD_POLL_INTERVAL_MS  4000     // rychlý poll chvíli po posledním požadavku
+#define CLOUD_POLL_IDLE_MS      12000    // klidový poll (šetří Vercel/Redis limity)
+#define CLOUD_TLS_VERIFY        true     // ověřovat certifikát appky (cloud_ca.h)
 ```
 
 ---
@@ -225,11 +227,13 @@ static const int RELAY_PINS[8] = {13, 12, 14, 27, 26, 25, 33, 32};
 irrigation/
 ├── config.h          – WiFi (STA + AP), GPIO piny, NTP, konstanty
 ├── storage.h/.cpp    – NVS persistence (Preferences) — zóny, počasí, systém
-├── zones.h/.cpp      – Ovládání GPIO relé (active HIGH), in-memory kruhový log
-├── scheduler.h/.cpp  – Týdenní rozvrhy, Scheduler_Tick() volaný každou minutu
+├── zones.h/.cpp      – Ovládání GPIO relé (active HIGH), fronta, master ventil a test relé jako neblokující stavový automat, in-memory log
+├── scheduler.h/.cpp  – Týdenní rozvrhy, Scheduler_Tick() každých 15 s (catch-up okno 5 min, fronta při kolizi)
 ├── weather.h/.cpp    – Open-Meteo API přes HTTPClient (zvládá chunked encoding)
 ├── webui.h/.cpp      – WebServer na portu 80, REST API + celé HTML admin rozhraní
 ├── cloud_sync.h/.cpp – Vzdálený přístup: polling tunel na cloud relay appku (viz níže)
+├── cloud_ca.h        – Kořenové CA pro ověření TLS spojení s appkou (GTS Root R1, ISRG Root X1, GlobalSign)
+├── tools/sync_cloud_template.sh – generuje cloud/lib/dashboard.template.html z HTML ve webui.cpp
 ├── irrigation.ino    – setup(), loop(), WiFi STA/AP logika, NTP, mDNS, millis() časovače
 └── cloud/            – Next.js appka pro Vercel (relay pro vzdálený přístup) — cloud/README.md
 ```
@@ -245,7 +249,7 @@ irrigation/
 | POST | `/api/zones` | Uložit konfiguraci zón |
 | POST | `/api/run` | `{"zone":1,"minutes":5}` — spustit zónu |
 | POST | `/api/stop` | Zastavit zálivku |
-| POST | `/api/test` | Test všech relé (~3 s každá) |
+| POST | `/api/test` | Test všech relé (~3 s každá) — vrátí hned, průběh v `/api/status` → `testRunning` |
 | GET | `/api/weather` | Data počasí + nastavení |
 | POST | `/api/weather` | Uložit nastavení počasí |
 | POST | `/api/weather/refresh` | Vynutit okamžitou aktualizaci počasí |
@@ -254,12 +258,16 @@ irrigation/
 | GET | `/api/log` | Log zálivek (posledních 40) |
 | POST | `/api/log/clear` | Vymazat log |
 | POST | `/api/restart` | Restartovat ESP32 |
-| GET | `/api/pause` | Stav pauzy — `{"active":true,"until":"2026-05-31"}` |
-| POST | `/api/pause` | `{"until":"2026-05-31"}` — nastavit pauzu; `{"until":""}` — zrušit |
+| GET | `/api/pause` | Stav pauzy — `{"active":true,"until":1780000000}` (unix čas) |
+| POST | `/api/pause` | `{"until":1780000000}` — nastavit pauzu; `{"until":0}` — zrušit |
 | GET | `/api/wifi` | Stav WiFi připojení + uložené SSID |
 | POST | `/api/wifi` | `{"ssid":"...","password":"...","restart":true}` — uložit credentials |
 | GET | `/api/wifi/scan` | Async scan sítí — volat opakovaně dokud `scanning=false` |
 | POST | `/api/time` | `{"epoch":1234567890}` — ruční nastavení času (RAM, do restartu) |
+
+> Všechny POST požadavky musí mít hlavičku `Content-Type: application/json`, jinak vrátí 415.
+> Je to ochrana proti CSRF — cizí stránka otevřená v prohlížeči na domácí síti nemůže bez
+> CORS preflightu poslat ESP32 příkaz. Lokální web ani cloud tunel to nijak neomezuje.
 
 ---
 
@@ -293,7 +301,8 @@ přístup k rozvrhům, ne jen pár příkazů.
 
 **Princip:** appka na Vercelu nemá jak se sama připojit k ESP32 (žádná veřejná IP,
 žádný otevřený port), takže je to naopak — ESP32 appku sám pravidelně "pollne"
-(`CLOUD_POLL_INTERVAL_MS`, výchozí 4 s), jestli tam čeká nějaký požadavek od
+(v klidu každých `CLOUD_POLL_IDLE_MS` = 12 s, po požadavku 3 minuty rychleji každé
+`CLOUD_POLL_INTERVAL_MS` = 4 s), jestli tam čeká nějaký požadavek od
 přihlášeného uživatele, přehraje ho sám na sobě přes svoje lokální REST API výše,
 a výsledek pošle zpátky. Appka na Vercelu tak nemá vlastní kopii žádné logiky
 ani dat — je to čistě tunel chráněný device tokenem.
@@ -310,9 +319,15 @@ Vercel Marketplace, proměnné prostředí, a hodnoty do `CLOUD_BASE_URL` /
 **Nové soubory:** `cloud_sync.h/.cpp` (ESP32), `cloud/` (Next.js appka pro Vercel)
 **Nové závislosti na ESP32:** žádné — `WiFiClientSecure` + `HTTPClient` jsou už
 součást ESP32 Arduino core (stejně jako `weather.cpp`)
-**Bezpečnost:** appka je chráněná heslem (session cookie), ESP32 appce heslo nezná
-— prokazuje se samostatným `DEVICE_TOKEN`; appka sama neukládá žádnou konfiguraci
-zálivky, jen krátkodobou frontu požadavků
+**Bezpečnost:** appka je chráněná heslem (session cookie, max. 10 pokusů za 15 min
+z jedné IP), ESP32 appce heslo nezná — prokazuje se samostatným `DEVICE_TOKEN`;
+TLS spojení ESP32 → appka se ověřuje proti kořenovým CA v `cloud_ca.h` (bez toho by
+šel token odchytit "po cestě"); appka sama neukládá žádnou konfiguraci zálivky, jen
+krátkodobou frontu požadavků
+
+**Jedno HTML pro obojí:** dashboard je napsaný jen jednou ve `webui.cpp`; do
+`cloud/lib/dashboard.template.html` ho kopíruje `tools/sync_cloud_template.sh`
+(po každé úpravě UI spusť znovu, `--check` ověří shodu).
 
 ---
 
@@ -323,3 +338,4 @@ zálivky, jen krátkodobou frontu požadavků
 | 1.0.0 | Základní verze — 6 zón, 3 programy, počasí Open-Meteo, web admin, WiFi AP záložní mód |
 | 1.1.0 | Paralelní a sekvenční spouštění více zón, dovolená mód (pauza zálivky do nastaveného data) |
 | 1.2.0 | WiFi nastavení přes web UI (scan + NVS credentials), ruční nastavení času, max TX výkon 19.5 dBm |
+| 1.3.0 | Oprava scheduleru (denní program se spouštěl jen jednou), catch-up okno a fronta při kolizi programů, neblokující master ventil / test relé, mutex nad stavem zón, ověření TLS pro cloud, adaptivní poll interval, CSRF ochrana POST API, log přeskočení (počasí/pauza), jedno HTML pro lokální i cloud UI |

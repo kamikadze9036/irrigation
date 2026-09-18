@@ -3,22 +3,22 @@ export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
+import { isDeviceAuthorized } from "@/lib/deviceAuth";
 
 export async function POST(req: NextRequest) {
-  const token = req.headers.get("x-device-token");
-  if (!token || !process.env.DEVICE_TOKEN || token !== process.env.DEVICE_TOKEN) {
+  if (!isDeviceAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const { requestId, status, body } = await req.json().catch(() => ({}));
-  if (!requestId) {
+  if (!requestId || typeof requestId !== "string") {
     return NextResponse.json({ error: "chybí requestId" }, { status: 400 });
   }
 
   await redis.set(
     `res:${requestId}`,
     JSON.stringify({ status: status || 200, body: body ?? "" }),
-    { ex: 30 }
+    { ex: 60 }
   );
   return NextResponse.json({ ok: true });
 }

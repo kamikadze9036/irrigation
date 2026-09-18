@@ -10,26 +10,52 @@
 //
 //  Díky tomu appka na Vercelu nemusí znát nic o zálivce — je to jen tunel.
 //  Veškerá logika (zóny, rozvrhy, počasí...) zůstává v webui.cpp beze změny.
+//
+//  TLS: spojení se ověřuje proti kořenovým CA v cloud_ca.h. Bez ověření by
+//  kdokoli "po cestě" (MITM) mohl odchytit device token a posílat vlastní
+//  příkazy — token sám o sobě kanál nechrání. Ověření lze vypnout
+//  (CLOUD_TLS_VERIFY false) jen pro ladění.
+//
+//  Poll interval je adaptivní: CLOUD_POLL_INTERVAL_MS chvíli po posledním
+//  požadavku (uživatel má otevřený dashboard), jinak CLOUD_POLL_IDLE_MS.
+//  Šetří to invokace funkcí i Redis příkazy na Vercelu/Upstash.
+//  TLS spojení a HTTPClient jsou perzistentní (keep-alive) — dřív se každé
+//  4 s dělal nový TLS handshake (~1 s CPU + desítky kB heapu).
 // ═══════════════════════════════════════════════════════════════
 #include "cloud_sync.h"
 #include "config.h"
+#include "cloud_ca.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
+#ifndef CLOUD_TLS_VERIFY
+#define CLOUD_TLS_VERIFY true
+#endif
+#ifndef CLOUD_POLL_IDLE_MS
+#define CLOUD_POLL_IDLE_MS 12000
+#endif
+#ifndef CLOUD_ACTIVE_WINDOW_MS
+#define CLOUD_ACTIVE_WINDOW_MS 180000   // 3 min rychlého pollování po posledním požadavku
+#endif
+
 static bool cloudConfigured(void) {
   return CLOUD_ENABLED && strlen(CLOUD_BASE_URL) > 0 && strlen(CLOUD_DEVICE_TOKEN) > 0;
 }
 
-// Čas posledního úspěšného pollu appky (millis()) — pro lokální indikátor v dashboardu
-static unsigned long lastOkMs = 0;
+static unsigned long lastOkMs      = 0;   // poslední úspěšný poll (pro lokální indikátor)
+static unsigned long lastRequestMs = 0;   // poslední skutečný požadavek z appky
+static bool          clientReady   = false;
+
+static WiFiClientSecure secureClient;
+static HTTPClient       http;
 
 bool CloudSync_IsConfigured(void) { return cloudConfigured(); }
 
 bool CloudSync_IsOnline(void) {
   if (!cloudConfigured() || lastOkMs == 0) return false;
-  return (millis() - lastOkMs) < 3 * (unsigned long)CLOUD_POLL_INTERVAL_MS;
+  return (millis() - lastOkMs) < 3UL * CLOUD_POLL_IDLE_MS;
 }
 
 void CloudSync_Init(void) {
@@ -37,67 +63,89 @@ void CloudSync_Init(void) {
     Serial.println("[CLOUD] CLOUD_BASE_URL/CLOUD_DEVICE_TOKEN nenastaveny — vzdálený přístup vypnut");
     return;
   }
-  Serial.printf("[CLOUD] Vzdálený přístup aktivní — relay: %s\n", CLOUD_BASE_URL);
+#if CLOUD_TLS_VERIFY
+  secureClient.setCACert(CLOUD_CA_BUNDLE);
+  Serial.printf("[CLOUD] Vzdálený přístup aktivní — relay: %s (TLS ověřeno)\n", CLOUD_BASE_URL);
+#else
+  secureClient.setInsecure();
+  Serial.printf("[CLOUD] Vzdálený přístup aktivní — relay: %s (TLS BEZ ověření!)\n", CLOUD_BASE_URL);
+#endif
+  http.setReuse(true);
+  http.setTimeout(8000);
+  clientReady = true;
+}
+
+static unsigned long currentInterval(void) {
+  bool active = lastRequestMs != 0 && (millis() - lastRequestMs) < CLOUD_ACTIVE_WINDOW_MS;
+  return active ? CLOUD_POLL_INTERVAL_MS : CLOUD_POLL_IDLE_MS;
 }
 
 // Přehraje jeden požadavek na vlastním lokálním webserveru (stejná cesta,
 // jakou by použil prohlížeč v domácí WiFi) — žádná změna webui.cpp potřeba.
 static bool replayLocal(const String &method, const String &path, const String &body,
                          int &outStatus, String &outBody) {
+  if (!path.startsWith("/")) return false;
   String url = "http://" + WiFi.localIP().toString() + path;
-  HTTPClient http;
-  if (!http.begin(url)) return false;
-  http.setTimeout(8000);
+  HTTPClient local;
+  if (!local.begin(url)) return false;
+  local.setTimeout(8000);
 
   if (method == "POST") {
-    http.addHeader("Content-Type", "application/json");
-    outStatus = http.POST(body);
+    local.addHeader("Content-Type", "application/json");
+    outStatus = local.POST(body);
   } else {
-    outStatus = http.GET();
+    outStatus = local.GET();
   }
-  outBody = http.getString();
-  http.end();
+  outBody = local.getString();
+  local.end();
   return outStatus > 0;
 }
 
 void CloudSync_Tick(void) {
-  if (!cloudConfigured()) { delay(5000); return; }
+  if (!cloudConfigured() || !clientReady) { delay(5000); return; }
   if (WiFi.status() != WL_CONNECTED) { delay(2000); return; }  // jen v STA módu (AP nemá internet)
 
-  WiFiClientSecure secureClient;
-  secureClient.setInsecure();  // bez ověření CA řetězce — kanál je chráněný device tokenem,
-                                // ne TLS identitou; embedovat CA root appky by přidalo
-                                // křehkost bez reálného přínosu proti tomuto modelu hrozeb
-
   // ── 1) Zeptej se appky, jestli na nás něco čeká ──────────────────
-  HTTPClient poll;
   String pollUrl = String(CLOUD_BASE_URL) + "/api/device/poll";
-  if (!poll.begin(secureClient, pollUrl)) { delay(CLOUD_POLL_INTERVAL_MS); return; }
-  poll.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
-  poll.setTimeout(8000);
-  int pollCode = poll.GET();
+  int pollCode = 0;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (!http.begin(secureClient, pollUrl)) { pollCode = HTTPC_ERROR_CONNECTION_REFUSED; break; }
+    http.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
+    pollCode = http.GET();
+    // Keep-alive spojení mohl server mezitím zavřít — jednou zkus znovu s čistým spojením
+    if (pollCode == HTTPC_ERROR_CONNECTION_LOST || pollCode == HTTPC_ERROR_SEND_HEADER_FAILED ||
+        pollCode == HTTPC_ERROR_NOT_CONNECTED) {
+      http.end();
+      secureClient.stop();
+      continue;
+    }
+    break;
+  }
 
   if (pollCode != 200) {
     if (pollCode > 0) Serial.printf("[CLOUD] Poll HTTP %d\n", pollCode);
-    poll.end();
-    delay(CLOUD_POLL_INTERVAL_MS);
+    else              Serial.printf("[CLOUD] Poll selhal: %s\n", HTTPClient::errorToString(pollCode).c_str());
+    http.end();
+    secureClient.stop();   // po chybě spojení začít příště čistě
+    delay(currentInterval());
     return;
   }
-  String pollBody = poll.getString();
-  poll.end();
+  String pollBody = http.getString();
+  http.end();
   lastOkMs = millis();  // appka odpověděla — spojení funguje, bez ohledu na to, jestli něco čekalo
 
   JsonDocument doc;
   if (deserializeJson(doc, pollBody) != DeserializationError::Ok) {
-    delay(CLOUD_POLL_INTERVAL_MS);
+    delay(currentInterval());
     return;
   }
 
   const char *reqIdC = doc["requestId"].as<const char*>();
   if (!reqIdC || strlen(reqIdC) == 0) {
-    delay(CLOUD_POLL_INTERVAL_MS);  // nic nečeká
+    delay(currentInterval());  // nic nečeká
     return;
   }
+  lastRequestMs = millis();
   String reqId = reqIdC;
 
   const char *methodC = doc["method"].as<const char*>();
@@ -125,17 +173,15 @@ void CloudSync_Tick(void) {
   String respOut;
   serializeJson(respDoc, respOut);
 
-  HTTPClient resp;
   String respUrl = String(CLOUD_BASE_URL) + "/api/device/response";
-  if (resp.begin(secureClient, respUrl)) {
-    resp.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
-    resp.addHeader("Content-Type", "application/json");
-    resp.setTimeout(8000);
-    int respCode = resp.POST(respOut);
+  if (http.begin(secureClient, respUrl)) {
+    http.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
+    http.addHeader("Content-Type", "application/json");
+    int respCode = http.POST(respOut);
     if (respCode != 200) Serial.printf("[CLOUD] Odpověď se nepodařilo odeslat, HTTP %d\n", respCode);
-    resp.end();
+    http.end();
   }
 
   // Hned zkus další — pokud čeká víc požadavků (např. víc otevřených tabů),
-  // nečekej na ně celý CLOUD_POLL_INTERVAL_MS.
+  // nečekej na ně celý interval.
 }

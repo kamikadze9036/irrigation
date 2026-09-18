@@ -6,20 +6,21 @@ WiFi. ESP32 nemá otevřený port ani veřejnou IP; místo toho appku sám pravi
 
 Appka nemá vlastní kopii ovládacího rozhraní — servíruje úplně stejné UI, jaké
 běží lokálně na ESP32 (`../webui.cpp`), jen s jinou transportní vrstvou pod
-kapotou. Takže "vzdálený přístup" = doslova stejné ovládání, se stejným
+kapotou. Soubor `lib/dashboard.template.html` generuje `../tools/sync_cloud_template.sh`
+z `webui.cpp` — neupravuj ho ručně. Takže "vzdálený přístup" = doslova stejné ovládání, se stejným
 scheduler editorem, jako doma.
 
 ## Jak to funguje
 
 ```
-prohlížeč  →  Vercel appka (fronta v Redisu)  ←  ESP32 (pollne každé 4 s)
+prohlížeč  →  Vercel appka (fronta v Redisu)  ←  ESP32 (pollne každých 12 s, po požadavku 4 s)
    (přihlášený heslem)         (bez cache dat, jen relay)      (přehraje požadavek sám na sobě)
 ```
 
 1. Přihlásíš se heslem → appka ti dá session cookie.
 2. Appka zobrazí přesně to samé UI jako lokální `http://irrigation.local`.
 3. Klik na cokoliv (spustit zónu, uložit rozvrh...) appka zafrontuje požadavek.
-4. ESP32 do pár vteřin požadavek vyzvedne, provede ho sám na sobě a pošle výsledek zpět.
+4. ESP32 požadavek vyzvedne (první klik do ~13 s, další už do ~4 s), provede ho sám na sobě a pošle výsledek zpět.
 5. Appka výsledek vrátí prohlížeči — vypadá to jako běžný fetch.
 
 ## Nasazení (poprvé)
@@ -53,7 +54,7 @@ prohlížeč  →  Vercel appka (fronta v Redisu)  ←  ESP32 (pollne každé 4 
    ```
    Nahraj firmware znovu do ESP32 (přes Arduino IDE).
 7. **Test** — otevři appku ve Vercelu, přihlas se heslem. V horní liště by se
-   mělo do ~10 s objevit "Zařízení: online" (ESP32 musí být připojené k domácí
+   mělo do ~15 s objevit "Zařízení: online" (ESP32 musí být připojené k domácí
    WiFi s internetem — v AP fallback módu vzdálený přístup nefunguje, protože
    tam žádný internet není).
 
@@ -71,3 +72,24 @@ redeploy proběhne automaticky.
   ESP32 a posílat appce falešné odpovědi — drž ho stejně tajný jako heslo.
 - Appka sama o sobě neukládá žádná data o zálivce (žádné programy, log,
   hesla k WiFi) — je to čistě tunel. Veškerá konfigurace zůstává jen na ESP32.
+- Přihlášení je omezené na 10 neúspěšných pokusů za 15 minut z jedné IP
+  (počítadlo v Redisu), hesla i tokeny se porovnávají v konstantním čase.
+- ESP32 ověřuje TLS certifikát appky proti kořenovým CA v `../cloud_ca.h`
+  (Google Trust Services, Let's Encrypt, GlobalSign). Pokud Vercel někdy
+  přejde na jiného vydavatele, poll začne selhávat s TLS chybou — pak stačí
+  do `cloud_ca.h` přidat nový kořen (viz komentář v souboru).
+
+## Limity free tierů
+
+ESP32 v klidu polluje každých 12 s = ~7 200 invokací denně a ~14 400 Redis
+příkazů (2 na poll). Měsíčně tedy ~430 k Redis příkazů — pod limitem Upstash
+free tieru (500 k/měsíc), ale ne s velkou rezervou. Pokud se limit blíží,
+zvyš `CLOUD_POLL_IDLE_MS` v `config.h`.
+
+## Lokální vývoj
+
+```
+cp .env.example .env.local   # vyplň SITE_PASSWORD, AUTH_SECRET, DEVICE_TOKEN, KV_*
+npm install
+npm run dev                   # http://localhost:3000
+```

@@ -19,6 +19,18 @@ function toHex(buf: ArrayBuffer): string {
     .join("");
 }
 
+// Porovnání v konstantním čase — běžné `===` skončí u prvního rozdílného znaku,
+// takže z doby odpovědi jde (teoreticky) odvozovat heslo/token po znacích.
+// Funguje i v Edge runtime, kde není node:crypto timingSafeEqual.
+export function safeEqual(a: string, b: string): boolean {
+  const ab = encoder.encode(a);
+  const bb = encoder.encode(b);
+  let diff = ab.length ^ bb.length;
+  const n = Math.max(ab.length, bb.length);
+  for (let i = 0; i < n; i++) diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  return diff === 0;
+}
+
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 dní
 
 export async function createSession(secret: string): Promise<string> {
@@ -35,5 +47,5 @@ export async function verifySession(token: string, secret: string): Promise<bool
   if (!Number.isFinite(expires) || Math.floor(Date.now() / 1000) > expires) return false;
   const key = await hmacKey(secret);
   const expectedSig = await crypto.subtle.sign("HMAC", key, encoder.encode(expiresStr));
-  return toHex(expectedSig) === sig;
+  return safeEqual(toHex(expectedSig), sig);
 }
