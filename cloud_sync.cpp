@@ -19,8 +19,9 @@
 //  Poll interval je adaptivní: CLOUD_POLL_INTERVAL_MS chvíli po posledním
 //  požadavku (uživatel má otevřený dashboard), jinak CLOUD_POLL_IDLE_MS.
 //  Šetří to invokace funkcí i Redis příkazy na Vercelu/Upstash.
-//  TLS spojení a HTTPClient jsou perzistentní (keep-alive) — dřív se každé
-//  4 s dělal nový TLS handshake (~1 s CPU + desítky kB heapu).
+//  Každý poll používá čerstvé TLS spojení (bez keep-alive). Perzistentní
+//  spojení se zkoušelo, ale odpovědi pollu se pak nespolehlivě četly; při
+//  klidovém intervalu 12 s handshake nevadí.
 // ═══════════════════════════════════════════════════════════════
 #include "cloud_sync.h"
 #include "config.h"
@@ -49,7 +50,6 @@ static unsigned long lastRequestMs = 0;   // poslední skutečný požadavek z a
 static bool          clientReady   = false;
 
 static WiFiClientSecure secureClient;
-static HTTPClient       http;
 
 bool CloudSync_IsConfigured(void) { return cloudConfigured(); }
 
@@ -70,8 +70,6 @@ void CloudSync_Init(void) {
   secureClient.setInsecure();
   Serial.printf("[CLOUD] Vzdálený přístup aktivní — relay: %s (TLS BEZ ověření!)\n", CLOUD_BASE_URL);
 #endif
-  http.setReuse(true);
-  http.setTimeout(8000);
   clientReady = true;
 }
 
@@ -107,26 +105,20 @@ void CloudSync_Tick(void) {
 
   // ── 1) Zeptej se appky, jestli na nás něco čeká ──────────────────
   String pollUrl = String(CLOUD_BASE_URL) + "/api/device/poll";
-  int pollCode = 0;
-  for (int attempt = 0; attempt < 2; attempt++) {
-    if (!http.begin(secureClient, pollUrl)) { pollCode = HTTPC_ERROR_CONNECTION_REFUSED; break; }
+  HTTPClient http;
+  http.setReuse(false);
+  http.setTimeout(8000);
+  secureClient.stop();   // vždy čerstvé spojení
+  int pollCode = HTTPC_ERROR_CONNECTION_REFUSED;
+  if (http.begin(secureClient, pollUrl)) {
     http.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
     pollCode = http.GET();
-    // Keep-alive spojení mohl server mezitím zavřít — jednou zkus znovu s čistým spojením
-    if (pollCode == HTTPC_ERROR_CONNECTION_LOST || pollCode == HTTPC_ERROR_SEND_HEADER_FAILED ||
-        pollCode == HTTPC_ERROR_NOT_CONNECTED) {
-      http.end();
-      secureClient.stop();
-      continue;
-    }
-    break;
   }
 
   if (pollCode != 200) {
     if (pollCode > 0) Serial.printf("[CLOUD] Poll HTTP %d\n", pollCode);
     else              Serial.printf("[CLOUD] Poll selhal: %s\n", HTTPClient::errorToString(pollCode).c_str());
     http.end();
-    secureClient.stop();   // po chybě spojení začít příště čistě
     delay(currentInterval());
     return;
   }
@@ -135,7 +127,10 @@ void CloudSync_Tick(void) {
   lastOkMs = millis();  // appka odpověděla — spojení funguje, bez ohledu na to, jestli něco čekalo
 
   JsonDocument doc;
-  if (deserializeJson(doc, pollBody) != DeserializationError::Ok) {
+  DeserializationError jerr = deserializeJson(doc, pollBody);
+  if (jerr != DeserializationError::Ok) {
+    Serial.printf("[CLOUD] Odpověď pollu nejde přečíst: %s (%d B): %.80s\n",
+                  jerr.c_str(), (int)pollBody.length(), pollBody.c_str());
     delay(currentInterval());
     return;
   }
@@ -174,12 +169,19 @@ void CloudSync_Tick(void) {
   serializeJson(respDoc, respOut);
 
   String respUrl = String(CLOUD_BASE_URL) + "/api/device/response";
-  if (http.begin(secureClient, respUrl)) {
-    http.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
-    http.addHeader("Content-Type", "application/json");
-    int respCode = http.POST(respOut);
-    if (respCode != 200) Serial.printf("[CLOUD] Odpověď se nepodařilo odeslat, HTTP %d\n", respCode);
-    http.end();
+  HTTPClient resp;
+  resp.setReuse(false);
+  resp.setTimeout(8000);
+  secureClient.stop();
+  if (resp.begin(secureClient, respUrl)) {
+    resp.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
+    resp.addHeader("Content-Type", "application/json");
+    int respCode = resp.POST(respOut);
+    if (respCode == 200) Serial.printf("[CLOUD] Odpověď odeslána (%d, %d B)\n", localStatus, (int)localBody.length());
+    else                 Serial.printf("[CLOUD] Odpověď se nepodařilo odeslat, HTTP %d\n", respCode);
+    resp.end();
+  } else {
+    Serial.println("[CLOUD] Odpověď se nepodařilo odeslat — spojení selhalo");
   }
 
   // Hned zkus další — pokud čeká víc požadavků (např. víc otevřených tabů),
