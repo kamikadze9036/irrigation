@@ -80,23 +80,40 @@ static unsigned long currentInterval(void) {
 
 // Přehraje jeden požadavek na vlastním lokálním webserveru (stejná cesta,
 // jakou by použil prohlížeč v domácí WiFi) — žádná změna webui.cpp potřeba.
-static bool replayLocal(const String &method, const String &path, const String &body,
-                         int &outStatus, String &outBody) {
-  if (!path.startsWith("/")) return false;
-  String url = "http://" + WiFi.localIP().toString() + path;
+// Zkouší nejdřív loopback (nezávisí na WiFi rozhraní), pak vlastní IP.
+// Důvod selhání se loguje — dřív se z "502" nedalo poznat, co se stalo.
+static bool replayLocalOn(const String &host, const String &method, const String &path,
+                          const String &body, int &outStatus, String &outBody) {
   HTTPClient local;
-  if (!local.begin(url)) return false;
+  local.setReuse(false);
+  local.setConnectTimeout(3000);
   local.setTimeout(8000);
-
+  if (!local.begin("http://" + host + path)) {
+    Serial.printf("[CLOUD] Lokálně %s: begin() selhal\n", host.c_str());
+    return false;
+  }
   if (method == "POST") {
     local.addHeader("Content-Type", "application/json");
     outStatus = local.POST(body);
   } else {
     outStatus = local.GET();
   }
+  if (outStatus <= 0) {
+    Serial.printf("[CLOUD] Lokálně %s: %s (%d)\n", host.c_str(),
+                  HTTPClient::errorToString(outStatus).c_str(), outStatus);
+    local.end();
+    return false;
+  }
   outBody = local.getString();
   local.end();
-  return outStatus > 0;
+  return true;
+}
+
+static bool replayLocal(const String &method, const String &path, const String &body,
+                         int &outStatus, String &outBody) {
+  if (!path.startsWith("/")) return false;
+  if (replayLocalOn("127.0.0.1", method, path, body, outStatus, outBody)) return true;
+  return replayLocalOn(WiFi.localIP().toString(), method, path, body, outStatus, outBody);
 }
 
 void CloudSync_Tick(void) {
