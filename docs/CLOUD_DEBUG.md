@@ -1,14 +1,15 @@
 # Ladění cloud tunelu — stav k 9. 10. 2026
 
 Cloud dashboard (https://irrigation-pi.vercel.app) po nasazení v1.3.0 nefunguje:
-stránka visí na „Načítám...“, konzole hlásí 504, později 502. **Problém je otevřený.**
+stránka visí na „Načítám...“, konzole hlásí 504, později 502. **Oprava je v kódu
+(přímé volání handlerů), čeká na ověření na zařízení** — viz níže.
 Lokální ovládání (`http://<IP ESP32>`) funguje bez problémů.
 
 ## Řetězec požadavku
 
 ```
 Safari → POST /api/proxy → Redis fronta → ESP32 GET /api/device/poll
-       → ESP32 přehraje požadavek sám na sobě (HTTP na vlastní IP)
+       → ESP32 zavolá handler přímo (WebUI_Dispatch, bez HTTP)
        → ESP32 POST /api/device/response → proxy vrátí odpověď prohlížeči
 ```
 
@@ -24,32 +25,31 @@ požadavky, takže server a fronta fungují. ESP32 požadavky přijímá
 (`[CLOUD] Požadavek ... GET /api/status`) a odpověď odesílá
 (`[CLOUD] Odpověď odeslána (502, 50 B)`).
 
-## Co je otevřené
+## Lokální přehrání — vyřešeno obejitím HTTP
 
-**ESP32 nedokáže přehrát požadavek na vlastním webserveru.** `replayLocal()` v
-`cloud_sync.cpp` vrací false po ~5–6 s (odpovídá výchozímu connect timeoutu
-HTTPClientu 5 s), proto jde do cloudu záložní odpověď 502
-(`{"ok":false,"error":"Lokální požadavek selhal"}`, 50 B).
+**Původní problém:** `replayLocal()` posílalo požadavek přes HTTP na vlastní IP
+(`http://192.168.20.8/...`) a po ~5–6 s (connect timeout HTTPClientu) vracelo false,
+takže do cloudu šla záložní odpověď 502 (`Lokální požadavek selhal`, 50 B).
+Přesná příčina selhání spojení ESP32 samo na sebe se nezjišťovala (hypotézy:
+loopback přes WiFi rozhraní, plánování tasků na core 0, sokety/heap po TLS).
 
-Příčina zatím neznámá. Hypotézy:
-1. Připojení na vlastní WiFi IP (`http://192.168.20.8/...`) z tasku na core 0 neprojde
-   (loopback přes WiFi rozhraní, plný listen backlog WebServeru, blokovaný klient).
-2. WebServer task (`WebUI_Handle`, core 0, priorita 1) nestíhá obsloužit klienta, když
-   CloudSync task blokuje na síti.
-3. Nedostatek heapu/soketů po TLS spojení s ověřením CA (`setCACert`) — TLS kontext
-   zůstává naalokovaný, zatímco se otevírá druhé spojení.
+**Oprava:** cloud tunel už HTTP smyčku nepoužívá. Handlery v `webui.cpp` dostávají
+`ApiCtx` (tělo + výstup) místo přímého přístupu k `server`, jsou v jedné tabulce
+`API_ROUTES` a volá je jak WebServer, tak `WebUI_Dispatch()` z `cloud_sync.cpp`.
+`apiMutex` zajišťuje, že naráz běží jen jeden handler. Restart (`/api/restart`,
+WiFi s restartem) se provede až po odeslání odpovědi (`restartAfter`).
 
-## Poslední commit (`38d6ef9`) — zatím NENASAZENO do ESP32
+Zároveň: dashboard nepouští další `/api/status`, dokud předchozí nedoběhl
+(`_dashBusy`) — v cloud módu se jinak požadavky hromadily ve frontě.
 
-`replayLocal()` zkouší nejdřív `127.0.0.1`, pak vlastní IP, s connect timeoutem 3 s a
-do Serialu vypisuje důvod (`Lokálně <host>: <chyba> (<kód>)`). **Další krok:** nahrát
-firmware, otevřít cloud dashboard, 30 s počkat a podívat se na řádky `[CLOUD]`.
+**Odezva:** `/api/device/response` vrací rovnou další čekající požadavek (sdílené
+`lib/queue.ts` s pollem), ESP32 ho obslouží bez nového pollu — na jeden požadavek
+připadá jedno HTTPS spojení místo dvou. Firmware se starší cloud appkou funguje dál
+(bez `requestId` v odpovědi se vrátí k pollu).
 
-Pokud selžou obě adresy, zvážit:
-- logovat `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()` před přehráním,
-- uvolnit TLS (`secureClient.stop()`) před lokálním voláním,
-- obejít HTTP smyčku úplně: místo HTTP na sebe volat handlery přímo (např. sdílená
-  tabulka routes nebo `WebServer` dispatch), čímž odpadne celá síťová vrstva.
+**Co ověřit po nahrání firmwaru:** v Serialu po otevření cloud dashboardu
+`[CLOUD] Požadavek ... GET /api/status` a hned `[CLOUD] Odpověď odeslána (200, ~700 B)`
+— ne 502 / 50 B. Dashboard na Vercelu má načíst data.
 
 ## Jak to testovat
 

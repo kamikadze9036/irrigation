@@ -432,8 +432,14 @@ async function logout() {
 }
 
 // ── Dashboard refresh ────────────────────────────────────────────
+// V cloud módu může jeden požadavek trvat déle než interval — bez zámku by se
+// /api/status hromadily ve frontě rychleji, než je ESP32 stihne odbavit.
+let _dashBusy = false;
 async function refreshDashboard() {
+  if(_dashBusy) return;
+  _dashBusy = true;
   const d = await api('/api/status');
+  _dashBusy = false;
   if(d.error) return;
 
   // Status řádek
@@ -952,20 +958,36 @@ async function loadLog() {
 //  Helpers
 // ═══════════════════════════════════════════════════════════════
 
-static void sendJson(const String &json) {
-  server.send(200, "application/json", json);
+// Jeden API požadavek nezávisle na tom, odkud přišel. Handlery nesahají
+// na `server` — čtou body/isJson a vyplní status/out. Volá je jak WebServer
+// (lokální prohlížeč), tak cloud tunel přes WebUI_Dispatch() přímo, bez HTTP
+// spojení ESP32 samo na sebe (to selhávalo, viz docs/CLOUD_DEBUG.md).
+struct ApiCtx {
+  String body;
+  bool   isJson       = false;   // Content-Type application/json
+  int    status       = 200;
+  String out;
+  bool   restartAfter = false;   // restartovat až po odeslání odpovědi
+};
+
+static void reply(ApiCtx &c, int status, const String &json) {
+  c.status = status;
+  c.out    = json;
+}
+
+static void sendJson(ApiCtx &c, const String &json) {
+  reply(c, 200, json);
 }
 
 // CSRF ochrana pro POST: vyžadujeme Content-Type application/json.
 // Cizí webová stránka otevřená v prohlížeči na domácí síti může na ESP32
 // poslat "simple" POST (text/plain) bez CORS preflightu. application/json
 // preflight (OPTIONS) vyžaduje a ten tady záměrně neobsluhujeme, takže
-// prohlížeč takový cross-origin požadavek zablokuje. Vlastní UI i cloud
-// replay (cloud_sync.cpp) hlavičku posílají vždy.
-static bool requireJson() {
-  if (server.header("Content-Type").startsWith("application/json")) return true;
-  server.send(415, "application/json",
-              "{\"ok\":false,\"error\":\"Content-Type musí být application/json\"}");
+// prohlížeč takový cross-origin požadavek zablokuje. Vlastní UI hlavičku
+// posílá vždy; cloud tunel prochází přihlášením na Vercelu, CSRF se ho netýká.
+static bool requireJson(ApiCtx &c) {
+  if (c.isJson) return true;
+  reply(c, 415, "{\"ok\":false,\"error\":\"Content-Type musí být application/json\"}");
   return false;
 }
 
@@ -982,7 +1004,7 @@ extern void   triggerWeatherUpdate(void);
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/status
 // ═══════════════════════════════════════════════════════════════
-static void handleStatus() {
+static void handleStatus(ApiCtx &c) {
   WeatherData wd = Weather_GetData();
 
   struct tm ti;
@@ -1041,13 +1063,13 @@ static void handleStatus() {
   }
 
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/zones
 // ═══════════════════════════════════════════════════════════════
-static void handleGetZones() {
+static void handleGetZones(ApiCtx &c) {
   JsonDocument doc;
   JsonArray zones = doc["zones"].to<JsonArray>();
   for (uint8_t z = 1; z <= ZONE_COUNT; z++) {
@@ -1067,17 +1089,17 @@ static void handleGetZones() {
     }
   }
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/zones
 // ═══════════════════════════════════════════════════════════════
-static void handlePostZones() {
-  if (!requireJson()) return;
+static void handlePostZones(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"JSON parse error\"}");
+  if (deserializeJson(doc, c.body) != DeserializationError::Ok) {
+    reply(c, 400, "{\"ok\":false,\"error\":\"JSON parse error\"}");
     return;
   }
   JsonArray zones = doc["zones"];
@@ -1098,38 +1120,38 @@ static void handlePostZones() {
     }
     Storage_SetZone(z, zc);
   }
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/run
 //  Body: {"zone":1,"minutes":5,"parallel":false}
 // ═══════════════════════════════════════════════════════════════
-static void handleRun() {
-  if (!requireJson()) return;
+static void handleRun(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   uint8_t  zone     = doc["zone"].as<uint8_t>();
   uint16_t mins     = doc["minutes"].as<uint16_t>();
   bool     parallel = doc["parallel"] | false;
   bool ok = Zone_Start(zone, mins, RUN_MANUAL, parallel);
-  sendJson(ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Neplatné parametry\"}");
+  sendJson(c, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Neplatné parametry\"}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/run-sequence
 //  Body: {"sequence":[{"zone":1,"minutes":20},{"zone":2,"minutes":15}]}
 // ═══════════════════════════════════════════════════════════════
-static void handleRunSequence() {
-  if (!requireJson()) return;
+static void handleRunSequence(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  if (deserializeJson(doc, server.arg("plain")) != DeserializationError::Ok) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"JSON error\"}");
+  if (deserializeJson(doc, c.body) != DeserializationError::Ok) {
+    reply(c, 400, "{\"ok\":false,\"error\":\"JSON error\"}");
     return;
   }
   JsonArray seq = doc["sequence"];
   if (!seq || seq.size() == 0) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Prázdná sekvence\"}");
+    reply(c, 400, "{\"ok\":false,\"error\":\"Prázdná sekvence\"}");
     return;
   }
 
@@ -1151,38 +1173,38 @@ static void handleRunSequence() {
   }
 
   if (count == 0) {
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Žádné platné zóny\"}");
+    reply(c, 400, "{\"ok\":false,\"error\":\"Žádné platné zóny\"}");
     return;
   }
   char buf[48];
   snprintf(buf, sizeof(buf), "{\"ok\":true,\"count\":%d}", count);
-  sendJson(String(buf));
+  sendJson(c, String(buf));
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/stop
 // ═══════════════════════════════════════════════════════════════
-static void handleStop() {
-  if (!requireJson()) return;
+static void handleStop(ApiCtx &c) {
+  if (!requireJson(c)) return;
   Zone_StopAll();
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/test — každá zóna ~3 s (neblokující, viz zones.cpp)
 // ═══════════════════════════════════════════════════════════════
-static void handleTest() {
-  if (!requireJson()) return;
+static void handleTest(ApiCtx &c) {
+  if (!requireJson(c)) return;
   // Test běží jako stavový automat v Zones_Tick() — handler neblokuje.
   // Průběh sleduje UI přes "testRunning" v /api/status.
   bool ok = Zones_StartTest();
-  sendJson(ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Test už běží\"}");
+  sendJson(c, ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"Test už běží\"}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/weather
 // ═══════════════════════════════════════════════════════════════
-static void handleGetWeather() {
+static void handleGetWeather(ApiCtx &c) {
   WeatherSettings ws = Storage_GetWeather();
   WeatherData wd     = Weather_GetData();
   JsonDocument doc;
@@ -1198,16 +1220,16 @@ static void handleGetWeather() {
   doc["data"]["lastUpdate"]   = (long)wd.lastUpdate;
   doc["data"]["shouldSkip"]   = Weather_ShouldSkip();
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/weather
 // ═══════════════════════════════════════════════════════════════
-static void handlePostWeather() {
-  if (!requireJson()) return;
+static void handlePostWeather(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   WeatherSettings ws = Storage_GetWeather();
   ws.latitude             = doc["lat"].as<float>();
   ws.longitude            = doc["lon"].as<float>();
@@ -1216,13 +1238,13 @@ static void handlePostWeather() {
   ws.rainSkipEnabled      = doc["skipPast"].as<bool>();
   ws.forecastSkipEnabled  = doc["skipFore"].as<bool>();
   Storage_SetWeather(ws);
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/pause
 // ═══════════════════════════════════════════════════════════════
-static void handleGetPause() {
+static void handleGetPause(ApiCtx &c) {
   time_t pauseUntil = Storage_GetPauseUntil();
   time_t now        = time(nullptr);
   bool   active     = (pauseUntil > 0 && now < pauseUntil);
@@ -1235,17 +1257,17 @@ static void handleGetPause() {
   char buf[64];
   snprintf(buf, sizeof(buf), "{\"active\":%s,\"until\":%ld}",
            active ? "true" : "false", (long)pauseUntil);
-  sendJson(String(buf));
+  sendJson(c, String(buf));
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/pause
 //  Body: {"until": 1234567890}  — unix timestamp; 0 = zrušit pauzu
 // ═══════════════════════════════════════════════════════════════
-static void handleSetPause() {
-  if (!requireJson()) return;
+static void handleSetPause(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   time_t until = (time_t)doc["until"].as<long>();
   Storage_SetPauseUntil(until);
   if (until > 0) {
@@ -1256,22 +1278,22 @@ static void handleSetPause() {
   } else {
     Serial.println("[WEB] Pauza zálivky zrušena");
   }
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/weather/refresh
 // ═══════════════════════════════════════════════════════════════
-static void handleWeatherRefresh() {
-  if (!requireJson()) return;
+static void handleWeatherRefresh(ApiCtx &c) {
+  if (!requireJson(c)) return;
   triggerWeatherUpdate();
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/system
 // ═══════════════════════════════════════════════════════════════
-static void handleGetSystem() {
+static void handleGetSystem(ApiCtx &c) {
   SystemSettings ss = Storage_GetSystem();
   JsonDocument doc;
   doc["settings"]["masterEnabled"] = ss.masterValveEnabled;
@@ -1285,16 +1307,16 @@ static void handleGetSystem() {
   doc["info"]["uptime"]  = String(millis() / 1000) + " s";
 
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/system
 // ═══════════════════════════════════════════════════════════════
-static void handlePostSystem() {
-  if (!requireJson()) return;
+static void handlePostSystem(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   SystemSettings ss = Storage_GetSystem();
   ss.masterValveEnabled = doc["masterEnabled"].as<bool>();
   ss.masterPreDelay     = doc["preDelay"].as<uint8_t>();
@@ -1302,13 +1324,13 @@ static void handlePostSystem() {
   const char *ntp = doc["ntp"].as<const char*>();
   if (ntp) strlcpy(ss.ntpServer, ntp, sizeof(ss.ntpServer));
   Storage_SetSystem(ss);
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/log
 // ═══════════════════════════════════════════════════════════════
-static void handleGetLog() {
+static void handleGetLog(ApiCtx &c) {
   int cnt = Log_Count();
   JsonDocument doc;
   JsonArray arr = doc["entries"].to<JsonArray>();
@@ -1322,39 +1344,38 @@ static void handleGetLog() {
     eo["note"]        = e.note;
   }
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/log/clear
 // ═══════════════════════════════════════════════════════════════
-static void handleLogClear() {
-  if (!requireJson()) return;
+static void handleLogClear(ApiCtx &c) {
+  if (!requireJson(c)) return;
   Log_Clear();
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/restart
 // ═══════════════════════════════════════════════════════════════
-static void handleRestart() {
-  if (!requireJson()) return;
-  sendJson("{\"ok\":true}");
-  delay(500);
-  ESP.restart();
+static void handleRestart(ApiCtx &c) {
+  if (!requireJson(c)) return;
+  sendJson(c, "{\"ok\":true}");
+  c.restartAfter = true;   // restart až po odeslání odpovědi (WebServer i cloud)
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/time
 //  Body: {"epoch": 1234567890}  — nastaví systémový čas (RAM, do restartu)
 // ═══════════════════════════════════════════════════════════════
-static void handleSetTime() {
-  if (!requireJson()) return;
+static void handleSetTime(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   long epoch = doc["epoch"].as<long>();
   if (epoch < 1000000000L) {   // sanity check — rok 2001+
-    server.send(400, "application/json", "{\"ok\":false,\"error\":\"Neplatný epoch\"}");
+    reply(c, 400, "{\"ok\":false,\"error\":\"Neplatný epoch\"}");
     return;
   }
   time_t t = (time_t)epoch;
@@ -1364,13 +1385,13 @@ static void handleSetTime() {
   char buf[32];
   strftime(buf, sizeof(buf), "%d.%m.%Y %H:%M:%S", ti);
   Serial.printf("[WEB] Čas nastaven ručně: %s\n", buf);
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/wifi — stav připojení + uložené credentials
 // ═══════════════════════════════════════════════════════════════
-static void handleGetWiFi() {
+static void handleGetWiFi(ApiCtx &c) {
   WiFiCredentials creds = Storage_GetWiFiCreds();
   JsonDocument doc;
   doc["hasCreds"]    = creds.ssid[0] != '\0';
@@ -1379,17 +1400,17 @@ static void handleGetWiFi() {
   doc["currentSSID"] = WiFi.SSID();
   doc["rssi"]        = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/wifi — uložit credentials (ssid="" = smazat)
 //  Body: {"ssid":"...","password":"...","restart":true/false}
 // ═══════════════════════════════════════════════════════════════
-static void handlePostWiFi() {
-  if (!requireJson()) return;
+static void handlePostWiFi(ApiCtx &c) {
+  if (!requireJson(c)) return;
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
+  deserializeJson(doc, c.body);
   const char *ssid = doc["ssid"].as<const char*>();
   const char *pass = doc["password"].as<const char*>();
   bool doRestart   = doc["restart"] | false;
@@ -1404,7 +1425,7 @@ static void handlePostWiFi() {
 
     // Odmítni pokud není heslo a nemáme ani staré
     if (!hasNewPassword && !hasOldPassword) {
-      server.send(400, "application/json", "{\"ok\":false,\"error\":\"Zadej heslo WiFi sítě\"}");
+      reply(c, 400, "{\"ok\":false,\"error\":\"Zadej heslo WiFi sítě\"}");
       return;
     }
 
@@ -1421,11 +1442,11 @@ static void handlePostWiFi() {
   }
 
   if (doRestart) {
-    sendJson("{\"ok\":true,\"restarting\":true}");
-    delay(500);
-    ESP.restart();
+    sendJson(c, "{\"ok\":true,\"restarting\":true}");
+    c.restartAfter = true;
+    return;
   }
-  sendJson("{\"ok\":true}");
+  sendJson(c, "{\"ok\":true}");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1433,12 +1454,12 @@ static void handlePostWiFi() {
 //  První volání spustí scan a vrátí {"scanning":true}
 //  Další volání vrací stav; po dokončení vrátí {"scanning":false,"networks":[...]}
 // ═══════════════════════════════════════════════════════════════
-static void handleWiFiScan() {
+static void handleWiFiScan(ApiCtx &c) {
   int n = WiFi.scanComplete();
 
   if (n == WIFI_SCAN_RUNNING) {
     // Scan stále probíhá
-    sendJson("{\"scanning\":true}");
+    sendJson(c, "{\"scanning\":true}");
     return;
   }
 
@@ -1446,7 +1467,7 @@ static void handleWiFiScan() {
     // Spustit nový async scan
     Serial.println("[WEB] WiFi async scan zahájen");
     WiFi.scanNetworks(true);  // true = asynchronní, neblokuje
-    sendJson("{\"scanning\":true}");
+    sendJson(c, "{\"scanning\":true}");
     return;
   }
 
@@ -1463,35 +1484,93 @@ static void handleWiFiScan() {
   }
   WiFi.scanDelete();
   String out; serializeJson(doc, out);
-  sendJson(out);
+  sendJson(c, out);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Routes — společné pro WebServer i cloud tunel
+// ═══════════════════════════════════════════════════════════════
+struct ApiRoute {
+  const char *path;
+  HTTPMethod  method;
+  void      (*fn)(ApiCtx &);
+};
+
+static const ApiRoute API_ROUTES[] = {
+  {"/api/status",          HTTP_GET,  handleStatus},
+  {"/api/zones",           HTTP_GET,  handleGetZones},
+  {"/api/zones",           HTTP_POST, handlePostZones},
+  {"/api/run",             HTTP_POST, handleRun},
+  {"/api/run-sequence",    HTTP_POST, handleRunSequence},
+  {"/api/stop",            HTTP_POST, handleStop},
+  {"/api/test",            HTTP_POST, handleTest},
+  {"/api/weather",         HTTP_GET,  handleGetWeather},
+  {"/api/weather",         HTTP_POST, handlePostWeather},
+  {"/api/weather/refresh", HTTP_POST, handleWeatherRefresh},
+  {"/api/system",          HTTP_GET,  handleGetSystem},
+  {"/api/system",          HTTP_POST, handlePostSystem},
+  {"/api/log",             HTTP_GET,  handleGetLog},
+  {"/api/log/clear",       HTTP_POST, handleLogClear},
+  {"/api/pause",           HTTP_GET,  handleGetPause},
+  {"/api/pause",           HTTP_POST, handleSetPause},
+  {"/api/time",            HTTP_POST, handleSetTime},
+  {"/api/wifi",            HTTP_GET,  handleGetWiFi},
+  {"/api/wifi",            HTTP_POST, handlePostWiFi},
+  {"/api/wifi/scan",       HTTP_GET,  handleWiFiScan},
+  {"/api/restart",         HTTP_POST, handleRestart},
+};
+
+// WebServer task a CloudSync task (oba core 0) by jinak mohly spustit dva
+// handlery současně — moduly mají vlastní zámky, ale např. WiFi scan ne.
+static SemaphoreHandle_t apiMutex = nullptr;
+
+static void runRoute(const ApiRoute &r, ApiCtx &c) {
+  xSemaphoreTake(apiMutex, portMAX_DELAY);
+  r.fn(c);
+  xSemaphoreGive(apiMutex);
+}
+
+static void serveRoute(const ApiRoute &r) {
+  ApiCtx c;
+  c.body   = server.arg("plain");
+  c.isJson = server.header("Content-Type").startsWith("application/json");
+  runRoute(r, c);
+  server.send(c.status, "application/json", c.out);
+  if (c.restartAfter) { delay(500); ESP.restart(); }
+}
+
+bool WebUI_Dispatch(const String &method, const String &path, const String &body,
+                    int &status, String &out, bool &restartAfter) {
+  HTTPMethod m = (method == "POST") ? HTTP_POST : HTTP_GET;
+  int q = path.indexOf('?');
+  String p = (q >= 0) ? path.substring(0, q) : path;
+  for (const ApiRoute &r : API_ROUTES) {
+    if (r.method != m || p != r.path) continue;
+    ApiCtx c;
+    c.body   = body;
+    c.isJson = true;   // jen z přihlášeného cloud dashboardu (viz requireJson)
+    runRoute(r, c);
+    status       = c.status;
+    out          = c.out;
+    restartAfter = c.restartAfter;
+    return true;
+  }
+  status       = 404;
+  out          = "{\"ok\":false,\"error\":\"Neznámý požadavek\"}";
+  restartAfter = false;
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════
 //  Init & Handle
 // ═══════════════════════════════════════════════════════════════
 void WebUI_Init(void) {
-  server.on("/",                    HTTP_GET,  handleRoot);
-  server.on("/api/status",          HTTP_GET,  handleStatus);
-  server.on("/api/zones",           HTTP_GET,  handleGetZones);
-  server.on("/api/zones",           HTTP_POST, handlePostZones);
-  server.on("/api/run",             HTTP_POST, handleRun);
-  server.on("/api/run-sequence",    HTTP_POST, handleRunSequence);
-  server.on("/api/stop",            HTTP_POST, handleStop);
-  server.on("/api/test",            HTTP_POST, handleTest);
-  server.on("/api/weather",         HTTP_GET,  handleGetWeather);
-  server.on("/api/weather",         HTTP_POST, handlePostWeather);
-  server.on("/api/weather/refresh", HTTP_POST, handleWeatherRefresh);
-  server.on("/api/system",          HTTP_GET,  handleGetSystem);
-  server.on("/api/system",          HTTP_POST, handlePostSystem);
-  server.on("/api/log",             HTTP_GET,  handleGetLog);
-  server.on("/api/log/clear",       HTTP_POST, handleLogClear);
-  server.on("/api/pause",           HTTP_GET,  handleGetPause);
-  server.on("/api/pause",           HTTP_POST, handleSetPause);
-  server.on("/api/time",            HTTP_POST, handleSetTime);
-  server.on("/api/wifi",            HTTP_GET,  handleGetWiFi);
-  server.on("/api/wifi",            HTTP_POST, handlePostWiFi);
-  server.on("/api/wifi/scan",       HTTP_GET,  handleWiFiScan);
-  server.on("/api/restart",         HTTP_POST, handleRestart);
+  if (!apiMutex) apiMutex = xSemaphoreCreateMutex();
+  server.on("/", HTTP_GET, handleRoot);
+  for (const ApiRoute &r : API_ROUTES) {
+    const ApiRoute *rp = &r;
+    server.on(r.path, r.method, [rp]() { serveRoute(*rp); });
+  }
   static const char *collectHdr[] = {"Content-Type"};
   server.collectHeaders(collectHdr, 1);   // kvůli requireJson()
   server.begin();

@@ -410,8 +410,14 @@ async function logout() {
 }
 
 // ── Dashboard refresh ────────────────────────────────────────────
+// V cloud módu může jeden požadavek trvat déle než interval — bez zámku by se
+// /api/status hromadily ve frontě rychleji, než je ESP32 stihne odbavit.
+let _dashBusy = false;
 async function refreshDashboard() {
+  if(_dashBusy) return;
+  _dashBusy = true;
   const d = await api('/api/status');
+  _dashBusy = false;
   if(d.error) return;
 
   // Status řádek

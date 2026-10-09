@@ -274,7 +274,7 @@ irrigation/
 Core 1 — loop()                          Core 0 — FreeRTOS tasky
 ──────────────────────────────           ─────────────────────────────────────
 Zones_Tick()      každých ~10 ms         WebServer  (8 kB stack)  server.handleClient()
-WiFi kontrola     30 s STA / 5 min AP    CloudSync (16 kB stack)  poll → replay → response
+WiFi kontrola     30 s STA / 5 min AP    CloudSync (16 kB stack)  poll → WebUI_Dispatch → response
 Scheduler_Tick()  každých 15 s
 Weather_Update()  každých 60 min (blokuje až 12 s)
 NTP resync        každých 24 h  (blokuje až 26 s)
@@ -287,9 +287,10 @@ NTP resync        každých 24 h  (blokuje až 26 s)
 - **Scheduler_Tick()** porovnává naplánovaný start každého programu s aktuálním
   časem v okně 5 minut (`SCHED_CATCHUP_S`). Každý start (unix čas) zpracuje právě
   jednou — spustí, zařadí do fronty, nebo zapíše do logu důvod přeskočení.
-- **Zámky:** tři rekurzivní/obyčejné mutexy — `storage.cpp` (NVS), `zones.cpp`
-  (stav zón, fronta, log), `weather.cpp` (data počasí). Pořadí zamykání je vždy
-  zóny → storage, nikdy naopak. Žádná funkce pod zámkem neblokuje (`delay()`).
+- **Zámky:** čtyři rekurzivní/obyčejné mutexy — `storage.cpp` (NVS), `zones.cpp`
+  (stav zón, fronta, log), `weather.cpp` (data počasí) a `webui.cpp` (`apiMutex`,
+  jeden API handler naráz — WebServer i CloudSync). Pořadí zamykání je vždy
+  api → zóny → storage, nikdy naopak. Žádná funkce pod zámkem neblokuje (`delay()`).
 - **HTTP handlery nikdy neblokují** — `/api/run`, `/api/test` i `/api/stop` vrátí
   odpověď okamžitě; průběh se sleduje přes `/api/status`.
 - **Přetečení `millis()`** (po ~49,7 dnech) je ošetřené porovnáním
@@ -396,8 +397,8 @@ přístup k rozvrhům, ne jen pár příkazů.
 žádný otevřený port), takže je to naopak — ESP32 appku sám pravidelně "pollne"
 (v klidu každých `CLOUD_POLL_IDLE_MS` = 12 s, po požadavku 3 minuty rychleji každé
 `CLOUD_POLL_INTERVAL_MS` = 4 s), jestli tam čeká nějaký požadavek od
-přihlášeného uživatele, přehraje ho sám na sobě přes svoje lokální REST API výše,
-a výsledek pošle zpátky. Appka na Vercelu tak nemá vlastní kopii žádné logiky
+přihlášeného uživatele, předá ho přímo handlerům lokálního REST API výše
+(`WebUI_Dispatch()` v `webui.cpp`, bez HTTP spojení sám na sebe) a výsledek pošle zpátky. Appka na Vercelu tak nemá vlastní kopii žádné logiky
 ani dat — je to čistě tunel chráněný device tokenem.
 
 **Nastavení:** `cloud/README.md` — založení Vercel účtu, Redis (Upstash) přes

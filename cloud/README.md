@@ -14,13 +14,13 @@ scheduler editorem, jako doma.
 
 ```
 prohlížeč  →  Vercel appka (fronta v Redisu)  ←  ESP32 (pollne každých 12 s, po požadavku 4 s)
-   (přihlášený heslem)         (bez cache dat, jen relay)      (přehraje požadavek sám na sobě)
+   (přihlášený heslem)         (bez cache dat, jen relay)      (obslouží požadavek stejnými handlery)
 ```
 
 1. Přihlásíš se heslem → appka ti dá session cookie.
 2. Appka zobrazí přesně to samé UI jako lokální `http://irrigation.local`.
 3. Klik na cokoliv (spustit zónu, uložit rozvrh...) appka zafrontuje požadavek.
-4. ESP32 požadavek vyzvedne (první klik do ~13 s, další už do ~4 s), provede ho sám na sobě a pošle výsledek zpět.
+4. ESP32 požadavek vyzvedne (první klik do ~13 s, další už do ~4 s), obslouží ho stejnými handlery jako lokální web a pošle výsledek zpět.
 5. Appka výsledek vrátí prohlížeči — vypadá to jako běžný fetch.
 
 ## Struktura
@@ -34,11 +34,12 @@ cloud/
 ├── app/api/logout/route.ts       – POST → smaže cookie
 ├── app/api/proxy/route.ts        – POST {path,method,body} → zafrontuje pro ESP32, čeká na odpověď (max 25 s)
 ├── app/api/device/poll/route.ts  – GET (X-Device-Token) → ESP32 si vyzvedne čekající požadavek
-├── app/api/device/response/route.ts – POST (X-Device-Token) → ESP32 vrátí výsledek
+├── app/api/device/response/route.ts – POST (X-Device-Token) → ESP32 vrátí výsledek a dostane další požadavek
 ├── app/api/device/status/route.ts   – GET → {online, lastSeen} pro indikátor v dashboardu
 ├── lib/auth.ts                   – HMAC session tokeny + safeEqual (konstantní čas)
 ├── lib/deviceAuth.ts             – ověření X-Device-Token
 ├── lib/redis.ts                  – Upstash Redis klient (KV_REST_API_URL/TOKEN)
+├── lib/queue.ts                  – vyzvednutí dalšího požadavku z fronty (poll i response)
 ├── lib/dashboardHtml.ts          – načte šablonu a doplní window.CLOUD_MODE
 └── lib/dashboard.template.html   – GENEROVANÉ z ../webui.cpp (tools/sync_cloud_template.sh)
 ```

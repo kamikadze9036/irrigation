@@ -4,12 +4,15 @@
 //  Princip: ESP32 nemá žádný otevřený port ani veřejnou IP, takže appka na
 //  Vercelu se k němu nemůže sama připojit. Místo toho ESP32 pravidelně
 //  "pollne" appku (GET /api/device/poll), jestli tam čeká nějaký požadavek
-//  od přihlášeného uživatele. Pokud ano, přehraje ho sám na sobě — pošle
-//  stejný HTTP požadavek na vlastní lokální IP, jaký by normálně poslal
-//  prohlížeč v domácí síti — a výsledek pošle zpět (POST /api/device/response).
+//  od přihlášeného uživatele. Pokud ano, předá ho přímo handlerům v webui.cpp
+//  (WebUI_Dispatch — stejný kód, jaký obslouží prohlížeč v domácí síti) a
+//  výsledek pošle zpět (POST /api/device/response).
+//
+//  Dřív se požadavek přehrával přes HTTP na vlastní IP. To na ESP32 selhávalo
+//  (connect timeout ~5 s → 502 v cloudu), proto se síťová vrstva obchází.
 //
 //  Díky tomu appka na Vercelu nemusí znát nic o zálivce — je to jen tunel.
-//  Veškerá logika (zóny, rozvrhy, počasí...) zůstává v webui.cpp beze změny.
+//  Veškerá logika (zóny, rozvrhy, počasí...) zůstává v webui.cpp.
 //
 //  TLS: spojení se ověřuje proti kořenovým CA v cloud_ca.h. Bez ověření by
 //  kdokoli "po cestě" (MITM) mohl odchytit device token a posílat vlastní
@@ -21,11 +24,14 @@
 //  Šetří to invokace funkcí i Redis příkazy na Vercelu/Upstash.
 //  Každý poll používá čerstvé TLS spojení (bez keep-alive). Perzistentní
 //  spojení se zkoušelo, ale odpovědi pollu se pak nespolehlivě četly; při
-//  klidovém intervalu 12 s handshake nevadí.
+//  klidovém intervalu 12 s handshake nevadí. Při otevřeném dashboardu
+//  odpověď na /api/device/response rovnou nese další požadavek, takže na
+//  jeden požadavek připadá jen jedno spojení místo dvou (poll + odpověď).
 // ═══════════════════════════════════════════════════════════════
 #include "cloud_sync.h"
 #include "config.h"
 #include "cloud_ca.h"
+#include "webui.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -78,42 +84,64 @@ static unsigned long currentInterval(void) {
   return active ? CLOUD_POLL_INTERVAL_MS : CLOUD_POLL_IDLE_MS;
 }
 
-// Přehraje jeden požadavek na vlastním lokálním webserveru (stejná cesta,
-// jakou by použil prohlížeč v domácí WiFi) — žádná změna webui.cpp potřeba.
-// Zkouší nejdřív loopback (nezávisí na WiFi rozhraní), pak vlastní IP.
-// Důvod selhání se loguje — dřív se z "502" nedalo poznat, co se stalo.
-static bool replayLocalOn(const String &host, const String &method, const String &path,
-                          const String &body, int &outStatus, String &outBody) {
-  HTTPClient local;
-  local.setReuse(false);
-  local.setConnectTimeout(3000);
-  local.setTimeout(8000);
-  if (!local.begin("http://" + host + path)) {
-    Serial.printf("[CLOUD] Lokálně %s: begin() selhal\n", host.c_str());
+struct CloudReq {
+  String id, method, path, body;
+};
+
+// Přečte požadavek z odpovědi pollu nebo /api/device/response (stejný tvar).
+// false = nic nečeká, nebo odpověď nejde přečíst.
+static bool parseRequest(const String &json, CloudReq &r) {
+  JsonDocument doc;
+  DeserializationError jerr = deserializeJson(doc, json);
+  if (jerr != DeserializationError::Ok) {
+    Serial.printf("[CLOUD] Odpověď appky nejde přečíst: %s (%d B): %.80s\n",
+                  jerr.c_str(), (int)json.length(), json.c_str());
     return false;
   }
-  if (method == "POST") {
-    local.addHeader("Content-Type", "application/json");
-    outStatus = local.POST(body);
-  } else {
-    outStatus = local.GET();
-  }
-  if (outStatus <= 0) {
-    Serial.printf("[CLOUD] Lokálně %s: %s (%d)\n", host.c_str(),
-                  HTTPClient::errorToString(outStatus).c_str(), outStatus);
-    local.end();
-    return false;
-  }
-  outBody = local.getString();
-  local.end();
+  const char *idC = doc["requestId"].as<const char*>();
+  if (!idC || strlen(idC) == 0) return false;
+  const char *methodC = doc["method"].as<const char*>();
+  const char *pathC   = doc["path"].as<const char*>();
+  const char *bodyC   = doc["body"].as<const char*>();
+  r.id     = idC;
+  r.method = methodC ? String(methodC) : "GET";
+  r.path   = pathC   ? String(pathC)   : "/api/status";
+  r.body   = bodyC   ? String(bodyC)   : "";
   return true;
 }
 
-static bool replayLocal(const String &method, const String &path, const String &body,
-                         int &outStatus, String &outBody) {
-  if (!path.startsWith("/")) return false;
-  if (replayLocalOn("127.0.0.1", method, path, body, outStatus, outBody)) return true;
-  return replayLocalOn(WiFi.localIP().toString(), method, path, body, outStatus, outBody);
+// Pošle výsledek požadavku appce. Vrací tělo její odpovědi — obsahuje rovnou
+// další čekající požadavek (nebo requestId:null) — a "" při chybě.
+static String sendResponse(const CloudReq &r, int status, const String &body) {
+  JsonDocument respDoc;
+  respDoc["requestId"] = r.id;
+  respDoc["status"]    = status;
+  respDoc["body"]      = body;
+  String respOut;
+  serializeJson(respDoc, respOut);
+
+  String respUrl = String(CLOUD_BASE_URL) + "/api/device/response";
+  HTTPClient resp;
+  resp.setReuse(false);
+  resp.setTimeout(8000);
+  secureClient.stop();
+  if (!resp.begin(secureClient, respUrl)) {
+    Serial.println("[CLOUD] Odpověď se nepodařilo odeslat — spojení selhalo");
+    return "";
+  }
+  resp.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
+  resp.addHeader("Content-Type", "application/json");
+  int respCode = resp.POST(respOut);
+  String out;
+  if (respCode == 200) {
+    out = resp.getString();
+    lastOkMs = millis();
+    Serial.printf("[CLOUD] Odpověď odeslána (%d, %d B)\n", status, (int)body.length());
+  } else {
+    Serial.printf("[CLOUD] Odpověď se nepodařilo odeslat, HTTP %d\n", respCode);
+  }
+  resp.end();
+  return out;
 }
 
 void CloudSync_Tick(void) {
@@ -143,64 +171,38 @@ void CloudSync_Tick(void) {
   http.end();
   lastOkMs = millis();  // appka odpověděla — spojení funguje, bez ohledu na to, jestli něco čekalo
 
-  JsonDocument doc;
-  DeserializationError jerr = deserializeJson(doc, pollBody);
-  if (jerr != DeserializationError::Ok) {
-    Serial.printf("[CLOUD] Odpověď pollu nejde přečíst: %s (%d B): %.80s\n",
-                  jerr.c_str(), (int)pollBody.length(), pollBody.c_str());
-    delay(currentInterval());
-    return;
-  }
-
-  const char *reqIdC = doc["requestId"].as<const char*>();
-  if (!reqIdC || strlen(reqIdC) == 0) {
+  CloudReq req;
+  if (!parseRequest(pollBody, req)) {
     delay(currentInterval());  // nic nečeká
     return;
   }
-  lastRequestMs = millis();
-  String reqId = reqIdC;
 
-  const char *methodC = doc["method"].as<const char*>();
-  const char *pathC   = doc["path"].as<const char*>();
-  const char *bodyC   = doc["body"].as<const char*>();
-  String method = methodC ? String(methodC) : "GET";
-  String path   = pathC   ? String(pathC)   : "/api/status";
-  String body   = bodyC   ? String(bodyC)   : "";
+  // ── 2) Obsluhuj požadavky, dokud appka posílá další ───────────────
+  // Odpověď na /api/device/response nese rovnou další čekající požadavek,
+  // takže při otevřeném dashboardu stačí jedno HTTPS spojení na požadavek.
+  for (;;) {
+    lastRequestMs = millis();
+    Serial.printf("[CLOUD] Požadavek %s %s %s\n", req.id.c_str(), req.method.c_str(), req.path.c_str());
 
-  Serial.printf("[CLOUD] Požadavek %s %s %s\n", reqId.c_str(), method.c_str(), path.c_str());
+    int localStatus = 0;
+    String localBody;
+    bool restartAfter = false;
+    if (!WebUI_Dispatch(req.method, req.path, req.body, localStatus, localBody, restartAfter)) {
+      Serial.printf("[CLOUD] Neznámá cesta %s %s\n", req.method.c_str(), req.path.c_str());
+    }
 
-  // ── 2) Přehraj lokálně ────────────────────────────────────────────
-  int localStatus = 0;
-  String localBody;
-  if (!replayLocal(method, path, body, localStatus, localBody)) {
-    localStatus = 502;
-    localBody   = "{\"ok\":false,\"error\":\"Lokální požadavek selhal\"}";
+    String next = sendResponse(req, localStatus, localBody);
+
+    if (restartAfter) {   // /api/restart nebo uložení WiFi s restartem
+      Serial.println("[CLOUD] Restart na požadavek z cloudu");
+      delay(500);
+      ESP.restart();
+    }
+
+    // Odeslání selhalo, nebo appka další požadavek neposílá (starší verze
+    // bez "requestId" v odpovědi) → hned zpátky na poll.
+    if (next.indexOf("\"requestId\"") < 0) return;
+    if (!parseRequest(next, req)) break;   // fronta je prázdná
   }
-
-  // ── 3) Pošli odpověď zpátky do fronty ─────────────────────────────
-  JsonDocument respDoc;
-  respDoc["requestId"] = reqId;
-  respDoc["status"]    = localStatus;
-  respDoc["body"]      = localBody;
-  String respOut;
-  serializeJson(respDoc, respOut);
-
-  String respUrl = String(CLOUD_BASE_URL) + "/api/device/response";
-  HTTPClient resp;
-  resp.setReuse(false);
-  resp.setTimeout(8000);
-  secureClient.stop();
-  if (resp.begin(secureClient, respUrl)) {
-    resp.addHeader("X-Device-Token", CLOUD_DEVICE_TOKEN);
-    resp.addHeader("Content-Type", "application/json");
-    int respCode = resp.POST(respOut);
-    if (respCode == 200) Serial.printf("[CLOUD] Odpověď odeslána (%d, %d B)\n", localStatus, (int)localBody.length());
-    else                 Serial.printf("[CLOUD] Odpověď se nepodařilo odeslat, HTTP %d\n", respCode);
-    resp.end();
-  } else {
-    Serial.println("[CLOUD] Odpověď se nepodařilo odeslat — spojení selhalo");
-  }
-
-  // Hned zkus další — pokud čeká víc požadavků (např. víc otevřených tabů),
-  // nečekej na ně celý interval.
+  delay(currentInterval());
 }
