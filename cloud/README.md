@@ -43,6 +43,11 @@ cloud/
 └── lib/dashboard.template.html   – GENEROVANÉ z ../webui.cpp (tools/sync_cloud_template.sh)
 ```
 
+**Fronta a zastaralá ID:** požadavek, který vyprší (504), se z `queue` odebere,
+a poll navíc přeskakuje ID bez živého `req:<id>`. Proxy při offline zařízení
+(`lastSeen` starší než 45 s) selže okamžitě, aby otevřená záložka zbytečně
+nespotřebovávala Redis příkazy.
+
 **Klíče v Redisu:** `queue` (seznam ID čekajících požadavků), `req:<id>` a
 `res:<id>` (obsah požadavku / odpovědi, TTL 60 s), `lastSeen` (čas posledního
 pollu ESP32), `login:fail:<ip>` (počítadlo neúspěšných přihlášení, TTL 15 min).

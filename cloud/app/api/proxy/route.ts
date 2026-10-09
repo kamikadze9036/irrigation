@@ -17,6 +17,9 @@ import { redis } from "@/lib/redis";
 const WAIT_MS = 25000;
 const POLL_INTERVAL_MS = 350;
 const ALLOWED_METHODS = new Set(["GET", "POST"]);
+// ESP32 polluje nejpozději každých ~13 s; když se neozvalo déle, je offline
+// a nemá smysl 25 s čekat (každé čekání = desítky Redis příkazů).
+const OFFLINE_AFTER_MS = 45000;
 
 export async function POST(req: NextRequest) {
   const { path, method, body } = await req.json().catch(() => ({}));
@@ -28,6 +31,11 @@ export async function POST(req: NextRequest) {
   const m = typeof method === "string" ? method.toUpperCase() : "GET";
   if (!ALLOWED_METHODS.has(m)) {
     return NextResponse.json({ error: "neplatná metoda" }, { status: 400 });
+  }
+
+  const last = Number((await redis.get<number>("lastSeen")) ?? 0);
+  if (!last || Date.now() - last > OFFLINE_AFTER_MS) {
+    return NextResponse.json({ error: "Zařízení neodpovídá (offline?)" }, { status: 504 });
   }
 
   const id = randomUUID();
@@ -52,6 +60,8 @@ export async function POST(req: NextRequest) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
+  // Požadavek odebrat i z fronty, ať tam nezůstane zastaralé ID.
   await redis.del(`req:${id}`);
+  await redis.lrem("queue", 0, id);
   return NextResponse.json({ error: "Zařízení neodpovídá (offline?)" }, { status: 504 });
 }
